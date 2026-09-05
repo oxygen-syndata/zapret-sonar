@@ -739,7 +739,7 @@ cmd_help() {
         gamefilter) printf 'Обход для игр (порты >1023).\n  Режимы: off|tcp|udp|both\n' ;;
         ipset)     printf 'Фильтр по IP из ipset-all.txt.\n  Режимы: none|any|loaded\n  any ломает доступ к обычным сайтам\n' ;;
         site)      printf 'Добавить домен в list-general-user.txt.\n  Поддомены учитываются автоматически.\n' ;;
-        start|stop|restart) printf 'Управление сервисом zapret.\n' ;;
+        start|stop|restart|enable|disable) printf 'Управление сервисом zapret.\n  enable/disable — автозапуск.\n' ;;
         *)         usage ;;
     esac
 }
@@ -762,6 +762,7 @@ zapret-sonar — стратегии Flowseal поверх zapret v1
   ipset [режим]         none|any|loaded — фильтр по IP из ipset-all.txt
   site <домен>          добавить домен в list-general-user.txt
   start|stop|restart    управление сервисом
+  enable|disable        автозапуск сервиса
 
 Стратегии подбираются перебором: рабочая зависит от провайдера.
 EOF
@@ -788,7 +789,7 @@ case "${1:-}" in
     gamefilter) shift; cmd_gamefilter "$@" ;;
     ipset)      shift; cmd_ipset "$@" ;;
     site)       shift; cmd_site "$@" ;;
-    start|stop|restart) cmd_service "$1" ;;
+    start|stop|restart|enable|disable) cmd_service "$1" ;;
     help)       shift; cmd_help "$@" ;;
     _apply)     shift; cmd_apply "$@" ;;
     _update)    shift; cmd_update "$@" ;;
