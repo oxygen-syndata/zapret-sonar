@@ -71,6 +71,7 @@ The installer downloads zapret v1 (bol-van) and Flowseal strategies, verifies sh
 | `ipset [mode]` | `none\|any\|loaded` — IP filter from `ipset-all.txt` |
 | `site <domain>` | Add domain to `list-general-user.txt` |
 | `start\|stop\|restart` | Service control |
+| `enable\|disable` | Autostart |
 
 ## TUI
 

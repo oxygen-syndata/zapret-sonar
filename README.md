@@ -71,6 +71,7 @@ sudo ./install.sh
 | `ipset [режим]` | `none\|any\|loaded` — фильтр по IP из `ipset-all.txt` |
 | `site <домен>` | Добавить домен в `list-general-user.txt` |
 | `start\|stop\|restart` | Управление сервисом |
+| `enable\|disable` | Автозапуск сервиса |
 
 ## TUI
 
