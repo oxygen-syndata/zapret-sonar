@@ -1,0 +1,233 @@
+#!/usr/bin/env bash
+# ============================================================================
+# zapret-sonar-tui — интерактивная оболочка над CLI zapret-sonar
+#
+# Тонкая обёртка: вся логика живёт в zapret-sonar, здесь только выбор и
+# отображение. Любое действие TUI выражается одной командой CLI, поэтому
+# расхождение поведения между интерфейсами невозможно.
+#
+# Зависимость: fzf (единственная). yad и прочие GUI-тулкиты не нужны.
+# ============================================================================
+
+set -uo pipefail
+
+TUI_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+CLI="$TUI_DIR/zapret-sonar"
+[[ -x "$CLI" ]] || { printf 'не найден zapret-sonar рядом с TUI: %s\n' "$CLI" >&2; exit 1; }
+command -v fzf >/dev/null 2>&1 || { printf 'нужен fzf: pacman -S fzf\n' >&2; exit 1; }
+
+# fzf без --color использует цвета терминала. Это намеренно: Tokyo Night
+# или любая другая тема терминала применяется автоматически, а хардкод
+# RGB-значений ломался бы на светлых темах.
+
+C_DIM=$'\033[2m'; C_OK=$'\033[32m'; C_BAD=$'\033[31m'
+C_ACC=$'\033[34m'; C_WARN=$'\033[33m'; C_OFF=$'\033[0m'
+
+# Разделители между группами пунктов. Префикс не даст fzf найти их поиском,
+# а «──» вместо «───» делает их короче выбираемых строк — визуально группируют.
+SEP_CHECK="${C_DIM}── Проверка${C_OFF}"
+SEP_CONF="${C_DIM}── Настройки${C_OFF}"
+SEP_SVC="${C_DIM}── Сервис${C_OFF}"
+
+pause() { printf '\n%sEnter — назад%s' "$C_DIM" "$C_OFF"; read -r -s -n1 _ 2>/dev/null || true; printf '\n'; }
+
+# --- Шапка -------------------------------------------------------------------
+ASCII_LOGO='
+░▒▓███████▓▒░░▒▓██████▓▒░░▒▓███████▓▒░ ░▒▓██████▓▒░░▒▓███████▓▒░  
+░▒▓█▓▒░      ░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░ 
+░▒▓█▓▒░      ░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░ 
+ ░▒▓██████▓▒░░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░▒▓████████▓▒░░▒▓███████▓▒░  
+       ░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░ 
+       ░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░ 
+░▒▓███████▓▒░ ░▒▓██████▓▒░░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░'
+
+header_line() {
+    local svc strat gf ips
+    svc=$("$CLI" _state service 2>/dev/null)
+    strat=$("$CLI" _state strategy 2>/dev/null)
+    gf=$("$CLI" gamefilter 2>/dev/null)
+    ips=$("$CLI" ipset 2>/dev/null)
+
+    # Сервис: работает/остановлен вместо systemd-жаргона.
+    local svc_c svc_t
+    if [[ "$svc" == "active" ]]; then
+        svc_c="$C_OK"; svc_t='работает'
+    else
+        svc_c="$C_BAD"; svc_t='остановлен'
+    fi
+
+    # Отсутствие стратегии — это не нейтральное состояние, а причина, по
+    # которой обход не работает. Поэтому красным, как и остановленный сервис.
+    local st_c="$C_ACC" st_t="$strat"
+    [[ -z "$strat" ]] && { st_c="$C_BAD"; st_t='не выбрана'; }
+
+    printf '%sСервис%s %s%s%s    %sСтратегия%s %s%s%s\n' \
+        "$C_DIM" "$C_OFF" "$svc_c" "$svc_t" "$C_OFF" \
+        "$C_DIM" "$C_OFF" "$st_c" "$st_t" "$C_OFF"
+    printf '%sИгры%s %s    %sФильтр IP%s %s' \
+        "$C_DIM" "$C_OFF" "${gf:-off}" \
+        "$C_DIM" "$C_OFF" "${ips:-?}"
+}
+
+# --- Выбор стратегии ---------------------------------------------------------
+# Preview показывает разобранную стратегию: методы, порты, списки. Это
+# помогает понять, чем варианты отличаются, не открывая .bat вручную.
+pick_strategy() {
+    # Список идёт без маркеров и отступов: строка равна имени стратегии.
+    # Любой префикс пришлось бы срезать и в выборе, и в preview — fzf делит
+    # строку по пробелам, а имена содержат пробелы, так что {2..} отрезал бы
+    # часть имени. Какая стратегия применена, видно в шапке меню и в самом
+    # preview (_describe печатает «применена сейчас»).
+    local cur; cur=$("$CLI" _state strategy 2>/dev/null)
+    "$CLI" _list 2>/dev/null \
+        | fzf --no-multi --height=100% --border=rounded \
+              --prompt='стратегия > ' \
+              --header="Enter — применить · Esc — отмена${cur:+ · сейчас: $cur}" \
+              --preview="$CLI _describe {} 2>&1" \
+              --preview-window='right,58%,border-left,wrap'
+}
+
+action_use() {
+    local s; s=$(pick_strategy)
+    [[ -z "$s" ]] && return 0
+    printf '\n%sПрименяю:%s %s\n\n' "$C_ACC" "$C_OFF" "$s"
+    # check работает без root — запускаем всегда, но только если применение
+    # удалось: иначе проверяли бы предыдущую стратегию и вводили в заблуждение.
+    if sudo "$CLI" use "$s"; then
+        printf '\n'
+        "$CLI" check
+    fi
+    pause
+}
+
+action_try() {
+    printf '\n%sПеребор всех стратегий.%s Сервис будет перезапускаться, связь может прерываться.\n' \
+        "$C_WARN" "$C_OFF"
+    printf 'Оставить первую заработавшую? [y/N] '
+    local keep=0 a; read -r a
+    [[ "$a" =~ ^[yYдД]$ ]] && keep=1
+    printf '\n'
+    if (( keep )); then
+        sudo "$CLI" try --keep
+    else
+        sudo "$CLI" try
+    fi
+    pause
+}
+
+action_gamefilter() {
+    local cur; cur=$("$CLI" gamefilter 2>/dev/null)
+    local m
+    m=$(printf 'off\ntcp\nudp\nboth\n' | fzf --height=40% --border=rounded \
+        --prompt='gamefilter > ' \
+        --header="сейчас: ${cur:-off} · обход для игр (порты >1023)")
+    [[ -z "$m" ]] && return 0
+    sudo "$CLI" gamefilter "$m"
+    pause
+}
+
+action_ipset() {
+    local cur; cur=$("$CLI" ipset 2>/dev/null)
+    local m
+    m=$(printf 'none\nloaded\nany\n' | fzf --height=40% --border=rounded \
+        --prompt='ipset > ' \
+        --header="сейчас: ${cur:-?} · none — не фильтровать, loaded — по списку, any — все IP (ломает сайты)")
+    [[ -z "$m" ]] && return 0
+    sudo "$CLI" ipset "$m"
+    pause
+}
+
+action_site() {
+    printf '\n%sДомен%s (поддомены учитываются автоматически): ' "$C_ACC" "$C_OFF"
+    local d; read -r d
+    [[ -z "$d" ]] && return 0
+    "$CLI" site "$d"
+    printf '\nПерезапустить сервис сейчас? [y/N] '
+    local a; read -r a
+    [[ "$a" =~ ^[yYдД]$ ]] && sudo "$CLI" restart
+    pause
+}
+
+action_update() {
+    printf '\n%sОбновление Flowseal с GitHub%s\n' "$C_ACC" "$C_OFF"
+    printf 'Будут обновлены списки доменов, бинарные дампы и стратегии .bat.\n'
+    printf 'Ваши пользовательские файлы (*-user.txt) останутся нетронутыми.\n\n'
+    printf 'Продолжить? [y/N] '
+    local a; read -r a
+    [[ "$a" =~ ^[yYдД]$ ]] || return 0
+    printf '\n'
+    "$CLI" update
+    pause
+}
+
+action_upgrade() {
+    printf '\n%sОбновление движка zapret с GitHub%s\n' "$C_ACC" "$C_OFF"
+    printf 'Будет загружен новый бинарник nfqws (и ip2net, mdig при наличии),\n'
+    printf 'проверен sha256 и заменён с перезапуском сервиса.\n\n'
+    printf 'Продолжить? [y/N] '
+    local a; read -r a
+    [[ "$a" =~ ^[yYдД]$ ]] || return 0
+    printf '\n'
+    sudo "$CLI" upgrade
+    pause
+}
+
+action_service() {
+    local m
+    m=$(printf 'restart\nstart\nstop\nenable (автозапуск)\ndisable (без автозапуска)\n' | fzf --height=40% --border=rounded \
+        --prompt='сервис > ')
+    [[ -z "$m" ]] && return 0
+    m="${m%% *}"
+    sudo "$CLI" "$m"
+    printf '\nсостояние: %s\n' "$("$CLI" _state service 2>/dev/null)"
+    pause
+}
+
+# --- Главное меню ------------------------------------------------------------
+main_menu() {
+    local choice
+    while :; do
+        # Порядок — по частоте использования: сначала подбор стратегии (главная
+        # задача), потом проверки, потом настройки и сервис.
+        # Пункты-разделители (── …) выбрать нельзя, они только группируют.
+        choice=$(printf '%s\n' \
+            'Подобрать рабочую стратегию автоматически' \
+            'Выбрать стратегию вручную' \
+            "$SEP_CHECK" \
+            'Проверить, работает ли обход' \
+            'Показать, что заблокировано без обхода' \
+            'Состояние и окружение' \
+            "$SEP_CONF" \
+            'Добавить сайт в список обхода' \
+            'Обход для игр' \
+            'Фильтр по IP-адресам' \
+            'Обновить стратегии Flowseal' \
+            'Обновить движок zapret' \
+            "$SEP_SVC" \
+            'Запуск, остановка, автозапуск' \
+            'Выход' \
+            | fzf --ansi --layout=reverse --height=100% --border=rounded \
+                  --prompt='  ' \
+                  --pointer='▸' \
+                  --header="${C_DIM}${ASCII_LOGO}${C_OFF}"$'\n\n'"$(header_line)"$'\n' \
+                  --header-first \
+                  --no-info)
+        case "$choice" in
+            'Подобрать рабочую стратегию автоматически') action_try ;;
+            'Выбрать стратегию вручную')                 action_use ;;
+            'Проверить, работает ли обход')              printf '\n'; "$CLI" check; pause ;;
+            'Показать, что заблокировано без обхода')    printf '\n'; "$CLI" baseline; pause ;;
+            'Состояние и окружение')                     printf '\n'; "$CLI" status; pause ;;
+            'Добавить сайт в список обхода')             action_site ;;
+            'Обход для игр')                             action_gamefilter ;;
+            'Фильтр по IP-адресам')                      action_ipset ;;
+            'Обновить стратегии Flowseal')     action_update ;;
+            'Обновить движок zapret')          action_upgrade ;;
+            'Запуск, остановка, перезапуск')             action_service ;;
+            'Выход'|'')                                  break ;;
+            *) ;;  # разделитель или неизвестный пункт — просто перерисовать
+        esac
+    done
+}
+
+main_menu

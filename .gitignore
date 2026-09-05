@@ -1,0 +1,5 @@
+*.orig
+*.bak
+*~
+/tmp
+lib/paths.sh
