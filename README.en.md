@@ -81,6 +81,19 @@ Interactive fzf interface: strategy selection with preview, checks, settings.
 sonar-tui    # or zapret-sonar-tui
 ```
 
+<details>
+<summary>Screenshots</summary>
+
+![Main menu](screenshots/tui-main-menu.png)
+
+![Strategy selection with preview](screenshots/tui-strategy-preview.png)
+
+![sonar check — 7/7](screenshots/sonar-check.png)
+
+![sonar status](screenshots/sonar-status.png)
+
+</details>
+
 ## Security
 
 - **Config is sourced as root via `.`** — therefore it's generated entirely from the translated strategy and checked for shell metacharacters. User input never reaches the config.

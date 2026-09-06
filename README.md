@@ -81,6 +81,19 @@ sudo ./install.sh
 sonar-tui    # или zapret-sonar-tui
 ```
 
+<details>
+<summary>Скриншоты</summary>
+
+![Главное меню](screenshots/tui-main-menu.png)
+
+![Выбор стратегии с preview](screenshots/tui-strategy-preview.png)
+
+![sonar check — 7/7](screenshots/sonar-check.png)
+
+![sonar status](screenshots/sonar-status.png)
+
+</details>
+
 ## Безопасность
 
 - **Конфиг исполняется через `.` от root** — поэтому генерируется целиком из транслированной стратегии и проверяется на shell-метасимволы. Пользовательский ввод в конфиг не попадает.
