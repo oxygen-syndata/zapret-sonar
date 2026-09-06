@@ -13,7 +13,7 @@
 
 set -uo pipefail
 
-ZF_VERSION="1.1.1"
+ZF_VERSION="1.1.2"
 
 ZF_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 
@@ -61,6 +61,16 @@ need_root() {
     [[ $EUID -eq 0 ]] && return 0
     command -v sudo >/dev/null 2>&1 || die "нужны права root, sudo не найден"
     return 1
+}
+
+# flock: предотвращает параллельный запуск try/update/upgrade — они рестартят
+# сервис и перезаписывают конфиг, одновременный запуск — хаос.
+_ZF_LOCK="/tmp/zapret-sonar.lock"
+_zf_lock() {
+    exec 9>"$_ZF_LOCK"
+    if ! flock -n 9; then
+        die "операция уже выполняется в другом терминале"
+    fi
 }
 
 # --- Версии ------------------------------------------------------------------
@@ -317,6 +327,7 @@ cmd_try() {
     done
 
     [[ $EUID -eq 0 ]] || die "нужен root: sudo $0 try ${*:-}"
+    _zf_lock
 
     local restore_to; restore_to=$(zf_state strategy)
     # Если конфиг не наш — предупредить: перебор перезапишет его, а исходная
@@ -540,6 +551,8 @@ cmd_update() {
         fi
         return $?
     fi
+
+    _zf_lock
 
     local cur=""
     [[ -f "$(_zf_flowseal_ver_file)" ]] && cur=$(tr -d '[:space:]' < "$(_zf_flowseal_ver_file)" 2>/dev/null)
@@ -831,6 +844,14 @@ cmd_service() {
     if need_root; then systemctl "$action" "$ZF_SERVICE"; else sudo systemctl "$action" "$ZF_SERVICE"; fi
 }
 
+cmd_log() {
+    case "${1:-}" in
+        -f|--follow) journalctl -u "$ZF_SERVICE" -f ;;
+        "")          journalctl -u "$ZF_SERVICE" --no-pager -n 50 ;;
+        *)           journalctl -u "$ZF_SERVICE" --no-pager --since "$1" ;;
+    esac
+}
+
 cmd_help() {
     local topic="${1:-}" 
     case "$topic" in
@@ -847,6 +868,7 @@ cmd_help() {
         ipset)     printf 'Фильтр по IP из ipset-all.txt.\n  Режимы: none|any|loaded\n  any ломает доступ к обычным сайтам\n' ;;
         site)      printf 'Управление списком list-general-user.txt.\n  site <домен> — добавить\n  site --list — показать\n  site --remove <домен> — удалить\n  Поддомены учитываются автоматически.\n' ;;
         start|stop|restart|enable|disable) printf 'Управление сервисом zapret.\n  enable/disable — автозапуск.\n' ;;
+        log)       printf 'Логи сервиса (journalctl).\n  log — последние 50 строк\n  log -f — следить в реальном времени\n  log "1 hour ago" — за период\n' ;;
         *)         usage ;;
     esac
 }
@@ -872,6 +894,7 @@ zapret-sonar — стратегии Flowseal поверх zapret v1
   site --remove <домен> удалить домен из списка
   start|stop|restart    управление сервисом
   enable|disable        автозапуск сервиса
+  log [-f] [период]     логи сервиса (journalctl)
 
   --debug               подробный вывод (трейс, verbose curl)
   --version|-v          версия
@@ -896,7 +919,7 @@ unset _zf_a _zf_debug_args
 # --help для подкоманд: sonar try --help → справка по try
 if [[ "${2:-}" == "--help" || "${2:-}" == "-h" ]]; then
     case "$1" in
-        list|use|status|check|try|baseline|update|upgrade|uninstall|gamefilter|ipset|site|start|stop|restart)
+        list|use|status|check|try|baseline|update|upgrade|uninstall|gamefilter|ipset|site|start|stop|restart|log)
             cmd_help "$1"; exit 0 ;;
     esac
 fi
@@ -915,6 +938,7 @@ case "${1:-}" in
     ipset)      shift; cmd_ipset "$@" ;;
     site)       shift; cmd_site "$@" ;;
     start|stop|restart|enable|disable) cmd_service "$1" ;;
+    log)        shift; cmd_log "$@" ;;
     help)       shift; cmd_help "$@" ;;
     _apply)     shift; cmd_apply "$@" ;;
     _update)    shift; cmd_update "$@" ;;

@@ -68,6 +68,7 @@ The installer downloads zapret v1 (bol-van) and Flowseal strategies, verifies sh
 | `site --remove <domain>` | Remove domain from list |
 | `start\|stop\|restart` | Service control |
 | `enable\|disable` | Autostart |
+| `log [-f] [period]` | Service logs (journalctl) |
 | `--debug` | Verbose output (trace, verbose curl) |
 | `--version` | Version |
 
@@ -181,6 +182,14 @@ sudo systemctl restart zapret
 ### What uninstall removes
 
 Service (stop + disable), systemd unit, nftables table `inet zapret`, symlinks (`zapret-sonar`, `sonar`, `zapret-sonar-tui`, `sonar-tui`), working directory `/opt/zapret`. config.orig is restored before directory deletion.
+
+### Service logs
+
+```bash
+sonar log                # last 50 lines
+sonar log -f             # follow in real time
+sonar log "1 hour ago"   # last hour
+```
 
 ## License
 

@@ -19,6 +19,14 @@ _ZF_HEALTH_SH=1
 
 ZF_HEALTH_TIMEOUT="${ZF_HEALTH_TIMEOUT:-8}"
 
+# Цвета для CLI-вывода: включаются только в интерактивном терминале.
+# В параллельном режиме (fork) наследуются дочерними процессами.
+if [[ -t 1 ]]; then
+    _ZF_C_OK=$'\033[32m' _ZF_C_BAD=$'\033[31m' _ZF_C_WARN=$'\033[33m' _ZF_C_DIM=$'\033[2m' _ZF_C_OFF=$'\033[0m'
+else
+    _ZF_C_OK='' _ZF_C_BAD='' _ZF_C_WARN='' _ZF_C_DIM='' _ZF_C_OFF=''
+fi
+
 # Цели HTTP-проверки: "URL"
 # Проверяем все ключевые точки: web, api, gateway для Discord и google/youtube
 ZF_HEALTH_HOSTS=(
@@ -95,13 +103,13 @@ zf_check_host() {
     local url="$1" code
     code=$(LC_ALL=C curl -o /dev/null -s -m "$ZF_HEALTH_TIMEOUT" -w '%{http_code}' "$url" 2>/dev/null) || code="000"
     if _zf_code_ok "$url" "$code"; then
-        printf '  OK    %-42s HTTP %s\n' "$url" "$code"
+        printf '  %sOK%s    %-42s HTTP %s\n' "$_ZF_C_OK" "$_ZF_C_OFF" "$url" "$code"
         return 0
     fi
     if [[ "$code" == "000" ]]; then
-        printf '  FAIL  %-42s нет соединения (таймаут/обрыв)\n' "$url"
+        printf '  %sFAIL%s  %-42s нет соединения (таймаут/обрыв)\n' "$_ZF_C_BAD" "$_ZF_C_OFF" "$url"
     else
-        printf '  FAIL  %-42s HTTP %s\n' "$url" "$code"
+        printf '  %sFAIL%s  %-42s HTTP %s\n' "$_ZF_C_BAD" "$_ZF_C_OFF" "$url" "$code"
     fi
     return 1
 }
@@ -130,26 +138,26 @@ zf_check_media() {
 
     # 404/410 на медиа-цели — не сбой обхода, а устаревший URL (версия снята с CDN).
     if [[ "$http_code" =~ ^(404|410|451)$ ]]; then
-        printf '  SKIP  %-42s HTTP %s — цель устарела\n' "$url" "$http_code"
+        printf '  %sSKIP%s  %-42s HTTP %s — цель устарела\n' "$_ZF_C_DIM" "$_ZF_C_OFF" "$url" "$http_code"
         rm -f "$tmp"
         return 0
     fi
     if ! [[ "$http_code" =~ ^(200|206)$ ]]; then
-        printf '  FAIL  %-42s HTTP %s (нет соединения)\n' "$url" "$http_code"
+        printf '  %sFAIL%s  %-42s HTTP %s (нет соединения)\n' "$_ZF_C_BAD" "$_ZF_C_OFF" "$url" "$http_code"
         rm -f "$tmp"
         return 1
     fi
 
     size=$(stat -c%s "$tmp" 2>/dev/null || echo 0)
     if (( size < min_bytes )); then
-        printf '  FAIL  %-42s %s байт (ждали ≥%s) — обрыв\n' "$url" "$size" "$min_bytes"
+        printf '  %sFAIL%s  %-42s %s байт (ждали ≥%s) — обрыв\n' "$_ZF_C_BAD" "$_ZF_C_OFF" "$url" "$size" "$min_bytes"
         rm -f "$tmp"
         return 1
     fi
 
     if (( min_speed_kb > 0 && speed_kb < min_speed_kb )); then
-        printf '  FAIL  %-42s скорость %s КБ/с (минимум %s КБ/с) — throttling\n' \
-            "$url" "$speed_kb" "$min_speed_kb"
+        printf '  %sFAIL%s  %-42s скорость %s КБ/с (минимум %s КБ/с) — throttling\n' \
+            "$_ZF_C_BAD" "$_ZF_C_OFF" "$url" "$speed_kb" "$min_speed_kb"
         rm -f "$tmp"
         return 1
     fi
@@ -157,22 +165,22 @@ zf_check_media() {
     if [[ -n "$magic" ]]; then
         actual=$(_zf_head_hex "$tmp" "$(( ${#magic} / 2 ))")
         if [[ -z "$actual" ]]; then
-            printf '  WARN  %-42s %s байт, сигнатуру проверить нечем\n' "$url" "$size"
+            printf '  %sWARN%s  %-42s %s байт, сигнатуру проверить нечем\n' "$_ZF_C_WARN" "$_ZF_C_OFF" "$url" "$size"
             rm -f "$tmp"
             return 0
         fi
         if [[ "${actual,,}" != "${magic,,}" ]]; then
-            printf '  FAIL  %-42s %s байт, сигнатура %s ≠ %s — подмена\n' \
-                "$url" "$size" "$actual" "$magic"
+            printf '  %sFAIL%s  %-42s %s байт, сигнатура %s ≠ %s — подмена\n' \
+                "$_ZF_C_BAD" "$_ZF_C_OFF" "$url" "$size" "$actual" "$magic"
             rm -f "$tmp"
             return 1
         fi
     fi
 
     if (( min_speed_kb > 0 )); then
-        printf '  OK    %-42s %s байт (%s КБ/с, тест скорости пройден)\n' "$url" "$size" "$speed_kb"
+        printf '  %sOK%s    %-42s %s байт (%s КБ/с, тест скорости пройден)\n' "$_ZF_C_OK" "$_ZF_C_OFF" "$url" "$size" "$speed_kb"
     else
-        printf '  OK    %-42s %s байт, сигнатура совпала\n' "$url" "$size"
+        printf '  %sOK%s    %-42s %s байт, сигнатура совпала\n' "$_ZF_C_OK" "$_ZF_C_OFF" "$url" "$size"
     fi
     rm -f "$tmp"
     return $rc
@@ -220,7 +228,11 @@ zf_health_check() {
     done
 
     rm -rf "$tmp_dir"
-    printf '\nИтог: %d из %d проверок пройдено\n' "$((total - failed))" "$total"
+    if (( failed == 0 )); then
+        printf '\n%sИтог: %d из %d проверок пройдено%s\n' "$_ZF_C_OK" "$((total - failed))" "$total" "$_ZF_C_OFF"
+    else
+        printf '\n%sИтог: %d из %d проверок пройдено%s\n' "$_ZF_C_BAD" "$((total - failed))" "$total" "$_ZF_C_OFF"
+    fi
     (( failed == 0 ))
 }
 
@@ -260,10 +272,10 @@ zf_baseline() {
         local line; line=$(cat "$tmp_dir/result_$i" 2>/dev/null)
         code="${line#*|}"
         if _zf_code_ok "$url" "$code"; then
-            printf '  доступен             %-42s HTTP %s\n' "$url" "$code"
+            printf '  %sдоступен%s             %-42s HTTP %s\n' "$_ZF_C_OK" "$_ZF_C_OFF" "$url" "$code"
             ZF_BASELINE_WORKING+=("$url")
         else
-            printf '  ЗАБЛОКИРОВАН         %-42s %s\n' "$url" "$code"
+            printf '  %sЗАБЛОКИРОВАН%s         %-42s %s\n' "$_ZF_C_BAD" "$_ZF_C_OFF" "$url" "$code"
             ZF_BASELINE_BLOCKED+=("$url")
         fi
         i=$((i + 1))
@@ -332,17 +344,17 @@ zf_score_strategy() {
     rm -rf "$tmp_dir"
 
     if (( broke > 0 )); then
-        printf 'СЛОМАЛА %d/%d (обход %d/%d) — %s' \
-            "$broke" "${#ZF_BASELINE_WORKING[@]}" "$fixed" "${#ZF_BASELINE_BLOCKED[@]}" "${broken[0]}"
+        printf '%sСЛОМАЛА%s %d/%d (обход %d/%d) — %s' \
+            "$_ZF_C_BAD" "$_ZF_C_OFF" "$broke" "${#ZF_BASELINE_WORKING[@]}" "$fixed" "${#ZF_BASELINE_BLOCKED[@]}" "${broken[0]}"
         (( ${#broken[@]} > 1 )) && printf ' и ещё %d' "$(( ${#broken[@]} - 1 ))"
         printf '\n'
         return 2
     fi
     if (( still == 0 )); then
-        printf 'РАБОТАЕТ (%d/%d, регрессий нет)\n' "$fixed" "${#ZF_BASELINE_BLOCKED[@]}"
+        printf '%sРАБОТАЕТ%s (%d/%d, регрессий нет)\n' "$_ZF_C_OK" "$_ZF_C_OFF" "$fixed" "${#ZF_BASELINE_BLOCKED[@]}"
         return 0
     fi
-    printf 'не работает (%d/%d)\n' "$fixed" "${#ZF_BASELINE_BLOCKED[@]}"
+    printf '%sне работает%s (%d/%d)\n' "$_ZF_C_BAD" "$_ZF_C_OFF" "$fixed" "${#ZF_BASELINE_BLOCKED[@]}"
     return 1
 }
 
@@ -360,7 +372,7 @@ zf_preflight() {
         local dns_status
         dns_status=$(resolvectl status 2>/dev/null)
         if [[ -n "$dns_status" ]] && ! printf '%s' "$dns_status" | grep -qE '\+DNSOverTLS|DNSOverTLS: yes'; then
-            printf '  WARN  DNS без шифрования (нет DoT/DoH)\n'
+            printf '  %sWARN%s  DNS без шифрования (нет DoT/DoH)\n' "$_ZF_C_WARN" "$_ZF_C_OFF"
             printf '        Flowseal требует Secure DNS: без него стратегии врут.\n'
             warn=$((warn + 1))
         fi
@@ -372,7 +384,7 @@ zf_preflight() {
     local v6addr
     v6addr=$(ip -6 addr show scope global 2>/dev/null | grep -c inet6 || true)
     if (( v6addr > 0 )) && ip -6 route show default 2>/dev/null | grep -q .; then
-        printf '  WARN  активен IPv6 (DISABLE_IPV6=1 в конфиге)\n'
+        printf '  %sWARN%s  активен IPv6 (DISABLE_IPV6=1 в конфиге)\n' "$_ZF_C_WARN" "$_ZF_C_OFF"
         printf '        Трафик по IPv6 идёт мимо nfqws — проверки могут быть недостоверны.\n'
         warn=$((warn + 1))
     fi
@@ -386,7 +398,7 @@ zf_preflight() {
         | awk '$1 ~ /^(tun|wg|awg)/ && $0 ~ /UP/ {print $1}' \
         | paste -sd' ')
     if [[ -n "$tun" ]]; then
-        printf '  WARN  активны туннели: %s\n' "$tun"
+        printf '  %sWARN%s  активны туннели: %s\n' "$_ZF_C_WARN" "$_ZF_C_OFF" "$tun"
         printf '        Трафик может идти мимо nfqws — проверки недостоверны.\n'
         warn=$((warn + 1))
     fi
@@ -399,11 +411,11 @@ zf_preflight() {
     for other in zapret2 zapret; do
         [[ "$other" == "$ZF_SERVICE" ]] && continue
         if [[ "$(systemctl is-active "$other" 2>/dev/null)" == "active" ]]; then
-            printf '  WARN  активен сервис %s — конфликт за NFQUEUE\n' "$other"
+            printf '  %sWARN%s  активен сервис %s — конфликт за NFQUEUE\n' "$_ZF_C_WARN" "$_ZF_C_OFF" "$other"
             warn=$((warn + 1))
         fi
     done
 
-    (( warn == 0 )) && printf '  OK    окружение чистое\n'
+    (( warn == 0 )) && printf '  %sOK%s    окружение чистое\n' "$_ZF_C_OK" "$_ZF_C_OFF"
     return 0
 }

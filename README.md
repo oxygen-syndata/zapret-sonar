@@ -68,6 +68,7 @@ sudo ./install.sh
 | `site --remove <домен>` | Удалить домен из списка |
 | `start\|stop\|restart` | Управление сервисом |
 | `enable\|disable` | Автозапуск сервиса |
+| `log [-f] [период]` | Логи сервиса (journalctl) |
 | `--debug` | Подробный вывод (трейс, verbose curl) |
 | `--version` | Версия |
 
@@ -181,6 +182,14 @@ sudo systemctl restart zapret
 ### Что удаляет uninstall
 
 Сервис (stop + disable), systemd-юнит, nftables-таблица `inet zapret`, симлинки (`zapret-sonar`, `sonar`, `zapret-sonar-tui`, `sonar-tui`), рабочая директория `/opt/zapret`. config.orig восстанавливается перед удалением каталога.
+
+### Логи сервиса
+
+```bash
+sonar log                # последние 50 строк
+sonar log -f             # следить в реальном времени
+sonar log "1 hour ago"   # за последний час
+```
 
 ## Лицензия
 
