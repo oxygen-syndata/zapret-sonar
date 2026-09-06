@@ -8,7 +8,7 @@ _sonar_completion() {
 
     if (( COMP_CWORD == 1 )); then
         # shellcheck disable=SC2207
-        COMPREPLY=( $(compgen -W "list use status check try baseline update upgrade uninstall gamefilter ipset site start stop restart enable disable help --version --help" -- "$cur") )
+        COMPREPLY=( $(compgen -W "list use status check try baseline update upgrade uninstall gamefilter ipset site start stop restart enable disable help --version --help --debug" -- "$cur") )
         return 0
     fi
 
@@ -36,6 +36,10 @@ _sonar_completion() {
         update|upgrade)
             # shellcheck disable=SC2207
             COMPREPLY=( $(compgen -W "--force" -- "$cur") )
+            return 0 ;;
+        site)
+            # shellcheck disable=SC2207
+            COMPREPLY=( $(compgen -W "--list --remove" -- "$cur") )
             return 0 ;;
     esac
 

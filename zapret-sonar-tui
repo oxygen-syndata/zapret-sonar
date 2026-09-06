@@ -64,9 +64,19 @@ header_line() {
     printf '%sСервис%s %s%s%s    %sСтратегия%s %s%s%s\n' \
         "$C_DIM" "$C_OFF" "$svc_c" "$svc_t" "$C_OFF" \
         "$C_DIM" "$C_OFF" "$st_c" "$st_t" "$C_OFF"
-    printf '%sИгры%s %s    %sФильтр IP%s %s' \
+    printf '%sИгры%s %s    %sФильтр IP%s %s\n' \
         "$C_DIM" "$C_OFF" "${gf:-off}" \
         "$C_DIM" "$C_OFF" "${ips:-?}"
+
+    # Статус обновлений: «актуально» или список доступных версий.
+    local upd; upd=$("$CLI" _update_status 2>/dev/null)
+    if [[ "$upd" == "актуально" ]]; then
+        printf '%sОбновления%s %s%s%s' \
+            "$C_DIM" "$C_OFF" "$C_OK" "актуально" "$C_OFF"
+    else
+        printf '%sОбновления%s %s%s%s' \
+            "$C_DIM" "$C_OFF" "$C_WARN" "$upd" "$C_OFF"
+    fi
 }
 
 # --- Выбор стратегии ---------------------------------------------------------
@@ -223,7 +233,7 @@ main_menu() {
             'Фильтр по IP-адресам')                      action_ipset ;;
             'Обновить стратегии Flowseal')     action_update ;;
             'Обновить движок zapret')          action_upgrade ;;
-            'Запуск, остановка, перезапуск')             action_service ;;
+            'Запуск, остановка, автозапуск')             action_service ;;
             'Выход'|'')                                  break ;;
             *) ;;  # разделитель или неизвестный пункт — просто перерисовать
         esac

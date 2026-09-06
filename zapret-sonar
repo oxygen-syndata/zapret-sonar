@@ -13,7 +13,7 @@
 
 set -uo pipefail
 
-ZF_VERSION="1.0.0"
+ZF_VERSION="1.1.0"
 
 ZF_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 
@@ -84,6 +84,81 @@ _zf_detect_arch() {
         aarch64|arm64) printf 'linux-arm64\n' ;;
         armv7l|armv6l|arm) printf 'linux-arm\n' ;;
         *) die "неизвестная архитектура: $(uname -m)" ;;
+    esac
+}
+
+# --- Проверка обновлений (фоновая, без systemd) ------------------------------
+# При запуске CLI/TUI проверяет наличие новых версий Flowseal и zapret.
+# Результат кэшируется в /tmp на 1 час. Проверка идёт в фоне — не блокирует.
+_ZF_UPDATE_CACHE="/tmp/zapret-sonar-update-check"
+
+_zf_do_update_check() {
+    local fs_local="" fs_remote="" zap_local="" zap_remote=""
+    local now; now=$(date +%s)
+
+    [[ -f "$(_zf_flowseal_ver_file)" ]] && fs_local=$(tr -d '[:space:]' < "$(_zf_flowseal_ver_file)" 2>/dev/null)
+    fs_local="${fs_local#v}"
+    fs_remote=$(_zf_github_latest_tag "Flowseal/zapret-discord-youtube" 2>/dev/null | tr -d '[:space:]')
+    fs_remote="${fs_remote#v}"
+
+    zap_local=$(_zf_nfqws_version 2>/dev/null | grep -oE 'v[0-9]+\.[0-9]+' | head -1)
+    zap_remote=$(_zf_github_latest_tag "bol-van/zapret" 2>/dev/null | tr -d '[:space:]')
+
+    local tmp; tmp=$(mktemp 2>/dev/null) || return 1
+    {
+        printf 'flowseal_local=%s\n' "$fs_local"
+        printf 'flowseal_remote=%s\n' "$fs_remote"
+        printf 'zapret_local=%s\n' "$zap_local"
+        printf 'zapret_remote=%s\n' "$zap_remote"
+        printf 'last_check=%s\n' "$now"
+    } > "$tmp"
+    mv -f "$tmp" "$_ZF_UPDATE_CACHE" 2>/dev/null
+}
+
+_zf_update_check() {
+    local now; now=$(date +%s)
+    local cached="" last_check=0
+    [[ -f "$_ZF_UPDATE_CACHE" ]] && cached=$(cat "$_ZF_UPDATE_CACHE" 2>/dev/null)
+    [[ -n "$cached" ]] && last_check=$(printf '%s' "$cached" | grep '^last_check=' | cut -d= -f2)
+    last_check="${last_check:-0}"
+
+    if (( now - last_check > 3600 )); then
+        ( _zf_do_update_check & ) 2>/dev/null
+    fi
+    printf '%s' "$cached"
+}
+
+_zf_update_status() {
+    local cached; cached=$(_zf_update_check 2>/dev/null)
+    [[ -z "$cached" ]] && { printf 'проверка…'; return 0; }
+
+    local fs_local fs_remote zap_local zap_remote
+    fs_local=$(printf '%s' "$cached" | grep '^flowseal_local=' | cut -d= -f2)
+    fs_remote=$(printf '%s' "$cached" | grep '^flowseal_remote=' | cut -d= -f2)
+    zap_local=$(printf '%s' "$cached" | grep '^zapret_local=' | cut -d= -f2)
+    zap_remote=$(printf '%s' "$cached" | grep '^zapret_remote=' | cut -d= -f2)
+
+    local out=""
+    if [[ -n "$fs_remote" && -n "$fs_local" && "$fs_remote" != "$fs_local" ]]; then
+        out="стратегии $fs_remote (у вас $fs_local)"
+    fi
+    if [[ -n "$zap_remote" && -n "$zap_local" ]]; then
+        if [[ "$(printf '%s\n%s\n' "$zap_remote" "$zap_local" | sort -V | tail -1)" != "$zap_local" ]]; then
+            [[ -n "$out" ]] && out="$out · "
+            out="${out}движок $zap_remote (у вас $zap_local)"
+        fi
+    fi
+
+    if [[ -z "$out" ]]; then printf 'актуально'
+    else printf '%s' "$out"
+    fi
+}
+
+_zf_update_notify() {
+    local status; status=$(_zf_update_status 2>/dev/null)
+    case "$status" in
+        актуально|проверка…) return 0 ;;
+        *) printf '\n⚠ Доступно обновление: %s\n  sudo sonar update — стратегии\n  sudo sonar upgrade — движок\n' "$status" ;;
     esac
 }
 
@@ -397,11 +472,42 @@ cmd_ipset_set() {
     zf_set_ipset_mode "$ZF_LISTS_DIR" "$1"
 }
 
-# Добавление домена в пользовательский список. Поддомены Flowseal учитывает
+# Управление пользовательским списком доменов. Поддомены Flowseal учитывает
 # автоматически, поэтому достаточно домена второго уровня.
 cmd_site() {
-    local domain="${1:-}" f="$ZF_LISTS_DIR/list-general-user.txt"
-    [[ -n "$domain" ]] || die "укажите домен"
+    local arg="${1:-}" f="$ZF_LISTS_DIR/list-general-user.txt"
+
+    case "$arg" in
+        --list)
+            if [[ -f "$f" ]]; then
+                tr -d '\r' < "$f" 2>/dev/null | grep -v '^#' | grep . || printf '(список пуст)\n'
+            else
+                printf '(список пуст)\n'
+            fi
+            return 0 ;;
+        --remove)
+            local target="${2:-}"
+            [[ -n "$target" ]] || die "укажите домен: site --remove <домен>"
+            target="${target#http://}"; target="${target#https://}"; target="${target%%/*}"
+            target="${target,,}"
+            [[ -f "$f" ]] || { printf 'список пуст\n'; return 0; }
+            if ! tr -d '\r' < "$f" 2>/dev/null | grep -qxF "$target"; then
+                printf 'не найден в списке: %s\n' "$target"; return 0
+            fi
+            local tmp; tmp=$(mktemp) || die "не удалось создать временный файл"
+            tr -d '\r' < "$f" | grep -vxF "$target" > "$tmp"
+            if [[ -w "$f" ]]; then
+                cat "$tmp" > "$f"
+            else
+                sudo tee "$f" < "$tmp" >/dev/null || { rm -f "$tmp"; die "не удалось записать"; }
+            fi
+            rm -f "$tmp"
+            printf 'удалён: %s (перезапустите: zapret-sonar restart)\n' "$target"
+            return 0 ;;
+    esac
+
+    local domain="$arg"
+    [[ -n "$domain" ]] || die "укажите домен (или --list / --remove <домен>)"
     domain="${domain#http://}"; domain="${domain#https://}"; domain="${domain%%/*}"
     domain="${domain,,}"
     [[ "$domain" =~ ^[a-z0-9.-]+\.[a-z]{2,}$ ]] || die "не похоже на домен: $domain"
@@ -738,7 +844,7 @@ cmd_help() {
         uninstall) printf 'Полностью удалить zapret-sonar (сервис, юнит, файлы, симлинки).\n' ;;
         gamefilter) printf 'Обход для игр (порты >1023).\n  Режимы: off|tcp|udp|both\n' ;;
         ipset)     printf 'Фильтр по IP из ipset-all.txt.\n  Режимы: none|any|loaded\n  any ломает доступ к обычным сайтам\n' ;;
-        site)      printf 'Добавить домен в list-general-user.txt.\n  Поддомены учитываются автоматически.\n' ;;
+        site)      printf 'Управление списком list-general-user.txt.\n  site <домен> — добавить\n  site --list — показать\n  site --remove <домен> — удалить\n  Поддомены учитываются автоматически.\n' ;;
         start|stop|restart|enable|disable) printf 'Управление сервисом zapret.\n  enable/disable — автозапуск.\n' ;;
         *)         usage ;;
     esac
@@ -761,12 +867,30 @@ zapret-sonar — стратегии Flowseal поверх zapret v1
   gamefilter [режим]    off|tcp|udp|both — обход для игр (порты >1023)
   ipset [режим]         none|any|loaded — фильтр по IP из ipset-all.txt
   site <домен>          добавить домен в list-general-user.txt
+  site --list           показать список доменов
+  site --remove <домен> удалить домен из списка
   start|stop|restart    управление сервисом
   enable|disable        автозапуск сервиса
+
+  --debug               подробный вывод (трейс, verbose curl)
+  --version|-v          версия
 
 Стратегии подбираются перебором: рабочая зависит от провайдера.
 EOF
 }
+
+# --debug: убираем из аргументов, включаем трейс
+ZF_DEBUG=0
+_zf_debug_args=()
+for _zf_a in "$@"; do
+    case "$_zf_a" in
+        --debug) ZF_DEBUG=1 ;;
+        *)       _zf_debug_args+=("$_zf_a") ;;
+    esac
+done
+set -- "${_zf_debug_args[@]}"
+unset _zf_a _zf_debug_args
+(( ZF_DEBUG )) && set -x
 
 # --help для подкоманд: sonar try --help → справка по try
 if [[ "${2:-}" == "--help" || "${2:-}" == "-h" ]]; then
@@ -798,7 +922,16 @@ case "${1:-}" in
     _state)     shift; cmd_state "$@" ;;
     _describe)  shift; cmd_describe "$@" ;;
     _list)      shift; zf_list_strategies ;;
+    _update_status) _zf_update_status ;;
     ''|-h|--help) usage ;;
     -v|--version) printf 'zapret-sonar %s\n' "$ZF_VERSION" ;;
     *) die "неизвестная команда: $1 (--help)" ;;
 esac
+
+# Уведомление об обновлениях — только в интерактивном терминале
+if [[ -t 1 && "${ZF_DEBUG:-0}" == "0" ]]; then
+    case "${1:-}" in
+        -v|--version|''|-h|--help) ;;
+        *) _zf_update_notify 2>/dev/null ;;
+    esac
+fi

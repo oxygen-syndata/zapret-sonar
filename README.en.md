@@ -64,8 +64,12 @@ The installer downloads zapret v1 (bol-van) and Flowseal strategies, verifies sh
 | `gamefilter [mode]` | `off\|tcp\|udp\|both` — bypass for games (ports >1023) |
 | `ipset [mode]` | `none\|any\|loaded` — IP filter from `ipset-all.txt` |
 | `site <domain>` | Add domain to `list-general-user.txt` |
+| `site --list` | Show domain list |
+| `site --remove <domain>` | Remove domain from list |
 | `start\|stop\|restart` | Service control |
 | `enable\|disable` | Autostart |
+| `--debug` | Verbose output (trace, verbose curl) |
+| `--version` | Version |
 
 ## TUI
 
@@ -82,6 +86,26 @@ sonar-tui    # or zapret-sonar-tui
 ![sonar check — 7/7](screenshots/sonar-check.png)
 
 ![sonar status](screenshots/sonar-status.png)
+
+TUI checks for updates on launch: the header shows whether strategies and engine are up to date. Updates are applied manually via menu buttons.
+
+## Updates
+
+On CLI/TUI launch, new versions of Flowseal and zapret are checked in the background (cached for 1 hour, non-blocking). Updates remain user-driven:
+
+```bash
+sudo sonar update     # update Flowseal strategies
+sudo sonar upgrade    # update zapret engine
+```
+
+CLI shows a notification after command execution if updates are available. TUI shows status in the header.
+
+## Debug
+
+```bash
+sonar --debug check    # command trace, verbose curl
+sonar --debug use alt9 # detailed translation and apply output
+```
 
 ## Security
 

@@ -180,21 +180,46 @@ zf_check_media() {
 
 # --- Полная проверка ---------------------------------------------------------
 # zf_health_check → 0 если всё прошло. Печатает отчёт.
+# HTTP- и медиа-проверки запускаются параллельно для скорости.
 zf_health_check() {
     local failed=0 total=0 url spec
+    local tmp_dir; tmp_dir=$(mktemp -d) || return 1
+    # shellcheck disable=SC2064
+    trap "rm -rf '$tmp_dir'" RETURN
 
-    printf 'HTTP-доступность:\n'
+    local i=0
     for url in "${ZF_HEALTH_HOSTS[@]}"; do
         total=$((total + 1))
-        zf_check_host "$url" || failed=$((failed + 1))
+        ( zf_check_host "$url" > "$tmp_dir/http_$i.out" 2>&1; echo $? > "$tmp_dir/http_$i.rc" ) &
+        i=$((i + 1))
+    done
+
+    local j=0
+    for spec in "${ZF_HEALTH_MEDIA[@]}"; do
+        total=$((total + 1))
+        ( zf_check_media "$spec" > "$tmp_dir/media_$j.out" 2>&1; echo $? > "$tmp_dir/media_$j.rc" ) &
+        j=$((j + 1))
+    done
+
+    wait
+
+    printf 'HTTP-доступность:\n'
+    i=0
+    for url in "${ZF_HEALTH_HOSTS[@]}"; do
+        cat "$tmp_dir/http_$i.out" 2>/dev/null
+        [[ "$(cat "$tmp_dir/http_$i.rc" 2>/dev/null)" != "0" ]] && failed=$((failed + 1))
+        i=$((i + 1))
     done
 
     printf 'Целостность контента:\n'
+    j=0
     for spec in "${ZF_HEALTH_MEDIA[@]}"; do
-        total=$((total + 1))
-        zf_check_media "$spec" || failed=$((failed + 1))
+        cat "$tmp_dir/media_$j.out" 2>/dev/null
+        [[ "$(cat "$tmp_dir/media_$j.rc" 2>/dev/null)" != "0" ]] && failed=$((failed + 1))
+        j=$((j + 1))
     done
 
+    rm -rf "$tmp_dir"
     printf '\nИтог: %d из %d проверок пройдено\n' "$((total - failed))" "$total"
     (( failed == 0 ))
 }
@@ -214,11 +239,26 @@ zf_baseline() {
     ZF_BASELINE_BLOCKED=()
     ZF_BASELINE_WORKING=()
 
-    # Заголовок не утверждает, что обход выключен: функция вызывается и при
-    # активном сервисе (тогда вызывающий печатает предупреждение выше).
+    local tmp_dir; tmp_dir=$(mktemp -d) || return 1
+    # shellcheck disable=SC2064
+    trap "rm -rf '$tmp_dir'" RETURN
+
+    local -a all_urls=("${ZF_HEALTH_TARGETS_STRICT[@]}" "${ZF_HEALTH_TARGETS_CONTROL[@]}")
+    local i=0
+    for url in "${all_urls[@]}"; do
+        (
+            code=$(LC_ALL=C curl -o /dev/null -s -m "$ZF_HEALTH_TIMEOUT" -w '%{http_code}' "$url" 2>/dev/null) || code="000"
+            printf '%s|%s' "$url" "$code" > "$tmp_dir/result_$i"
+        ) &
+        i=$((i + 1))
+    done
+    wait
+
     printf 'Замер целей:\n'
-    for url in "${ZF_HEALTH_TARGETS_STRICT[@]}" "${ZF_HEALTH_TARGETS_CONTROL[@]}"; do
-        code=$(LC_ALL=C curl -o /dev/null -s -m "$ZF_HEALTH_TIMEOUT" -w '%{http_code}' "$url" 2>/dev/null) || code="000"
+    i=0
+    for url in "${all_urls[@]}"; do
+        local line; line=$(cat "$tmp_dir/result_$i" 2>/dev/null)
+        code="${line#*|}"
         if _zf_code_ok "$url" "$code"; then
             printf '  доступен             %-42s HTTP %s\n' "$url" "$code"
             ZF_BASELINE_WORKING+=("$url")
@@ -226,7 +266,10 @@ zf_baseline() {
             printf '  ЗАБЛОКИРОВАН         %-42s %s\n' "$url" "$code"
             ZF_BASELINE_BLOCKED+=("$url")
         fi
+        i=$((i + 1))
     done
+
+    rm -rf "$tmp_dir"
 
     if (( ${#ZF_BASELINE_BLOCKED[@]} == 0 )); then
         printf '\nНи одна цель не блокируется — проверить эффективность стратегий нечем.\n'
@@ -250,21 +293,43 @@ zf_score_strategy() {
     local url code fixed=0 still=0 broke=0
     local -a broken=()
 
+    local tmp_dir; tmp_dir=$(mktemp -d) || return 1
+    # shellcheck disable=SC2064
+    trap "rm -rf '$tmp_dir'" RETURN
+
+    local -a all_urls=("${ZF_BASELINE_BLOCKED[@]}" "${ZF_BASELINE_WORKING[@]}")
+    local i=0
+    for url in "${all_urls[@]}"; do
+        (
+            code=$(LC_ALL=C curl -o /dev/null -s -m "$ZF_HEALTH_TIMEOUT" -w '%{http_code}' "$url" 2>/dev/null) || code="000"
+            printf '%s|%s' "$url" "$code" > "$tmp_dir/result_$i"
+        ) &
+        i=$((i + 1))
+    done
+    wait
+
+    i=0
     for url in "${ZF_BASELINE_BLOCKED[@]}"; do
-        code=$(LC_ALL=C curl -o /dev/null -s -m "$ZF_HEALTH_TIMEOUT" -w '%{http_code}' "$url" 2>/dev/null) || code="000"
+        local line; line=$(cat "$tmp_dir/result_$i" 2>/dev/null)
+        code="${line#*|}"
         if _zf_code_ok "$url" "$code"; then
             fixed=$((fixed + 1))
         else
             still=$((still + 1))
         fi
+        i=$((i + 1))
     done
 
     for url in "${ZF_BASELINE_WORKING[@]}"; do
-        code=$(LC_ALL=C curl -o /dev/null -s -m "$ZF_HEALTH_TIMEOUT" -w '%{http_code}' "$url" 2>/dev/null) || code="000"
+        local line; line=$(cat "$tmp_dir/result_$i" 2>/dev/null)
+        code="${line#*|}"
         if ! _zf_code_ok "$url" "$code"; then
             broke=$((broke + 1)); broken+=("$url")
         fi
+        i=$((i + 1))
     done
+
+    rm -rf "$tmp_dir"
 
     if (( broke > 0 )); then
         printf 'СЛОМАЛА %d/%d (обход %d/%d) — %s' \

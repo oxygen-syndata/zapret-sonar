@@ -64,8 +64,12 @@ sudo ./install.sh
 | `gamefilter [режим]` | `off\|tcp\|udp\|both` — обход для игр (порты >1023) |
 | `ipset [режим]` | `none\|any\|loaded` — фильтр по IP из `ipset-all.txt` |
 | `site <домен>` | Добавить домен в `list-general-user.txt` |
+| `site --list` | Показать список доменов |
+| `site --remove <домен>` | Удалить домен из списка |
 | `start\|stop\|restart` | Управление сервисом |
 | `enable\|disable` | Автозапуск сервиса |
+| `--debug` | Подробный вывод (трейс, verbose curl) |
+| `--version` | Версия |
 
 ## TUI
 
@@ -82,6 +86,26 @@ sonar-tui    # или zapret-sonar-tui
 ![sonar check — 7/7](screenshots/sonar-check.png)
 
 ![sonar status](screenshots/sonar-status.png)
+
+TUI проверяет обновления при запуске: в шапке видно, актуальны ли стратегии и движок. Обновление — вручную, кнопками в меню.
+
+## Обновления
+
+При запуске CLI/TUI проверяется наличие новых версий Flowseal и zapret. Проверка идёт в фоне, не блокирует работу — результат кэшируется на час. Обновление остаётся за пользователем:
+
+```bash
+sudo sonar update     # обновить стратегии Flowseal
+sudo sonar upgrade    # обновить движок zapret
+```
+
+CLI показывает уведомление после выполнения команды, если есть обновление. TUI показывает статус в шапке.
+
+## Отладка
+
+```bash
+sonar --debug check    # трейс команд, verbose curl
+sonar --debug use alt9 # детальный вывод трансляции и применения
+```
 
 ## Безопасность
 
