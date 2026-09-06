@@ -13,7 +13,7 @@
 
 set -uo pipefail
 
-ZF_VERSION="1.1.0"
+ZF_VERSION="1.1.1"
 
 ZF_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 
@@ -250,8 +250,9 @@ cmd_check()    { zf_health_check; }
 # юнита знает только он (может быть не «zapret», см. lib/paths.sh).
 cmd_state() {
     case "${1:-strategy}" in
-        service) systemctl is-active "$ZF_SERVICE" 2>/dev/null || true ;;
-        *)       zf_state "${1:-strategy}" ;;
+        service)   systemctl is-active "$ZF_SERVICE" 2>/dev/null || true ;;
+        autostart) systemctl is-enabled "$ZF_SERVICE" 2>/dev/null || true ;;
+        *)         zf_state "${1:-strategy}" ;;
     esac
 }
 

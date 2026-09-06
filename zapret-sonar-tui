@@ -42,27 +42,30 @@ ASCII_LOGO='
 ░▒▓███████▓▒░ ░▒▓██████▓▒░░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░'
 
 header_line() {
-    local svc strat gf ips
+    local svc strat gf ips auto
     svc=$("$CLI" _state service 2>/dev/null)
     strat=$("$CLI" _state strategy 2>/dev/null)
     gf=$("$CLI" gamefilter 2>/dev/null)
     ips=$("$CLI" ipset 2>/dev/null)
+    auto=$("$CLI" _state autostart 2>/dev/null)
 
     # Сервис: работает/остановлен вместо systemd-жаргона.
-    local svc_c svc_t
+    # Тег (авто) — dim, чтобы не отвлекал, но был заметен.
+    local svc_c svc_t auto_tag=""
     if [[ "$svc" == "active" ]]; then
         svc_c="$C_OK"; svc_t='работает'
     else
         svc_c="$C_BAD"; svc_t='остановлен'
     fi
+    [[ "$auto" == "enabled" ]] && auto_tag=" ${C_DIM}(авто)${C_OFF}"
 
     # Отсутствие стратегии — это не нейтральное состояние, а причина, по
     # которой обход не работает. Поэтому красным, как и остановленный сервис.
     local st_c="$C_ACC" st_t="$strat"
     [[ -z "$strat" ]] && { st_c="$C_BAD"; st_t='не выбрана'; }
 
-    printf '%sСервис%s %s%s%s    %sСтратегия%s %s%s%s\n' \
-        "$C_DIM" "$C_OFF" "$svc_c" "$svc_t" "$C_OFF" \
+    printf '%sСервис%s %s%s%s%s    %sСтратегия%s %s%s%s\n' \
+        "$C_DIM" "$C_OFF" "$svc_c" "$svc_t" "$auto_tag" "$C_OFF" \
         "$C_DIM" "$C_OFF" "$st_c" "$st_t" "$C_OFF"
     printf '%sИгры%s %s    %sФильтр IP%s %s\n' \
         "$C_DIM" "$C_OFF" "${gf:-off}" \
