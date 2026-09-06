@@ -1,14 +1,8 @@
 # zapret-sonar
 
-```
- ░▒▓███████▓▒░░▒▓██████▓▒░░▒▓███████▓▒░ ░▒▓██████▓▒░░▒▓███████▓▒░  
-░▒▓█▓▒░      ░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░ 
-░▒▓█▓▒░      ░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░ 
- ░▒▓██████▓▒░░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░▒▓████████▓▒░░▒▓███████▓▒░  
-       ░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░ 
-       ░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░ 
-░▒▓███████▓▒░ ░▒▓██████▓▒░░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░ 
-```
+<p align="center">
+  <img src=".github/social-preview.png" alt="zapret-sonar" width="640">
+</p>
 
 Linux wrapper for [zapret](https://github.com/bol-van/zapret) v1 with [Flowseal](https://github.com/Flowseal/zapret-discord-youtube) strategies. Translates Flowseal `.bat` strategies into `nfqws` arguments for Linux — no Wine, no manual conversion.
 
@@ -81,9 +75,6 @@ Interactive fzf interface: strategy selection with preview, checks, settings.
 sonar-tui    # or zapret-sonar-tui
 ```
 
-<details>
-<summary>Screenshots</summary>
-
 ![Main menu](screenshots/tui-main-menu.png)
 
 ![Strategy selection with preview](screenshots/tui-strategy-preview.png)
@@ -91,8 +82,6 @@ sonar-tui    # or zapret-sonar-tui
 ![sonar check — 7/7](screenshots/sonar-check.png)
 
 ![sonar status](screenshots/sonar-status.png)
-
-</details>
 
 ## Security
 

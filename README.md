@@ -1,14 +1,8 @@
 # zapret-sonar
 
-```
- ░▒▓███████▓▒░░▒▓██████▓▒░░▒▓███████▓▒░ ░▒▓██████▓▒░░▒▓███████▓▒░  
-░▒▓█▓▒░      ░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░ 
-░▒▓█▓▒░      ░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░ 
- ░▒▓██████▓▒░░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░▒▓████████▓▒░▒▓███████▓▒░  
-       ░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░ 
-       ░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░ 
-░▒▓███████▓▒░ ░▒▓██████▓▒░░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░ 
-```
+<p align="center">
+  <img src=".github/social-preview.png" alt="zapret-sonar" width="640">
+</p>
 
 Linux-обёртка над [zapret](https://github.com/bol-van/zapret) v1 со стратегиями [Flowseal](https://github.com/Flowseal/zapret-discord-youtube). Трансляция `.bat`-стратегий Flowseal в аргументы `nfqws` для Linux — без Wine, без ручной конвертации.
 
@@ -81,9 +75,6 @@ sudo ./install.sh
 sonar-tui    # или zapret-sonar-tui
 ```
 
-<details>
-<summary>Скриншоты</summary>
-
 ![Главное меню](screenshots/tui-main-menu.png)
 
 ![Выбор стратегии с preview](screenshots/tui-strategy-preview.png)
@@ -91,8 +82,6 @@ sonar-tui    # или zapret-sonar-tui
 ![sonar check — 7/7](screenshots/sonar-check.png)
 
 ![sonar status](screenshots/sonar-status.png)
-
-</details>
 
 ## Безопасность
 
