@@ -63,9 +63,15 @@ zf_translate() {
     esac
 
     local c
-    # CRLF → LF, затем берём только строку запуска winws.exe и всё, что
-    # к ней подклеено через ^ (продолжение строки в cmd).
-    c=$(tr -d '\r' < "$bat" | sed -n '/winws\.exe/,$p')
+    # CRLF → LF, затем берём команду winws.exe и только её продолжения через
+    # ^. Batch-команды после запуска (exit, call, set и т.п.) в конфиг не входят.
+    c=$(tr -d '\r' < "$bat" | awk '
+        !found && /winws\.exe/ { found=1 }
+        found {
+            print
+            if ($0 !~ /\^[[:space:]]*$/) exit
+        }
+    ')
     [[ -n "$c" ]] || { printf 'translate: не найден вызов winws.exe в %s\n' "$bat" >&2; return 1; }
 
     # ^! — это экранированный "!" в cmd (delayed expansion), а не продолжение

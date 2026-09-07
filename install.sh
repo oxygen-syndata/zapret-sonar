@@ -30,6 +30,8 @@ SERVICE_NAME="${SERVICE_NAME:-zapret}"
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STAGING=""
 
+source "$SRC_DIR/lib/flowseal.sh"
+
 # Пути к распакованным исходникам. Через глобальные переменные, а не через
 # stdout функций: иначе прогресс-вывод попал бы в захватываемое значение.
 FETCHED_ZAPRET=""
@@ -87,7 +89,7 @@ preflight() {
     [[ -d /run/systemd/system ]] || die "systemd не обнаружен — этот установщик рассчитан на systemd"
 
     local f
-    for f in zapret-sonar lib/translate.sh lib/zconfig.sh lib/health.sh; do
+    for f in zapret-sonar lib/translate.sh lib/zconfig.sh lib/health.sh lib/flowseal.sh; do
         [[ -f "$SRC_DIR/$f" ]] || die "рядом с install.sh нет $f"
     done
 
@@ -147,13 +149,14 @@ fetch_zapret() {
     ( cd "$STAGING" && sha256sum -c --ignore-missing --quiet sha256sum.txt 2>/dev/null ) \
         || die "sha256 не совпал — скачанные бинарники повреждены или подменены"
 
-    local nfqws="$root/binaries/$arch/nfqws"
-    [[ -f "$nfqws" ]] || die "в релизе нет бинарника для $arch"
-    # Пере-проверка целевого бинарника отдельно: --ignore-missing выше мог
-    # пропустить его, если строки для этой арки в файле нет.
-    grep -q "binaries/$arch/nfqws" "$STAGING/sha256sum.txt" \
-        || die "в sha256sum.txt нет записи для $arch/nfqws — целостность не подтверждена"
-    info "nfqws $arch: sha256 подтверждён"
+    local binary name
+    for name in nfqws ip2net mdig; do
+        binary="$root/binaries/$arch/$name"
+        [[ -f "$binary" ]] || die "в релизе нет бинарника для $arch/$name"
+        grep -q "binaries/$arch/$name" "$STAGING/sha256sum.txt" \
+            || die "в sha256sum.txt нет записи для $arch/$name — целостность не подтверждена"
+        info "$name $arch: sha256 подтверждён"
+    done
     FETCHED_ZAPRET="$root"
 }
 
@@ -197,8 +200,8 @@ install_zapret() {
     cp -a "$src/." "$ZAPRET_BASE/"
 
     install -Dm755 "$src/binaries/$arch/nfqws" "$ZAPRET_BASE/nfq/nfqws"
-    [[ -f "$src/binaries/$arch/ip2net" ]] && install -Dm755 "$src/binaries/$arch/ip2net" "$ZAPRET_BASE/ip2net/ip2net"
-    [[ -f "$src/binaries/$arch/mdig" ]]   && install -Dm755 "$src/binaries/$arch/mdig"   "$ZAPRET_BASE/mdig/mdig"
+    install -Dm755 "$src/binaries/$arch/ip2net" "$ZAPRET_BASE/ip2net/ip2net"
+    install -Dm755 "$src/binaries/$arch/mdig"   "$ZAPRET_BASE/mdig/mdig"
 
     [[ -n "$saved" ]] && cp -a "$saved" "$ZAPRET_BASE/config"
     chown -R root:root "$ZAPRET_BASE"
@@ -209,41 +212,25 @@ install_flowseal() {
     local src="$1"
     log "Установка стратегий и списков Flowseal"
 
-    local sdir="$ZAPRET_BASE/flowseal-strategies"
-    local bdir="$ZAPRET_BASE/flowseal-bin"
-    local ldir="$ZAPRET_BASE/flowseal-lists"
-    mkdir -p "$sdir" "$bdir" "$ldir"
+    local current="$ZAPRET_BASE/flowseal-current"
+    local old_lists="$ZAPRET_BASE/flowseal-lists"
+    [[ -d "$current/lists" ]] && old_lists="$current/lists"
+    local stage="$ZAPRET_BASE/.flowseal-stage.$$"
+    local release
+    release="$ZAPRET_BASE/.flowseal-releases/$FLOWSEAL_VER-$(date +%s)-$$"
 
-    local f
-    for f in "$src"/*.bat; do
-        # service.bat — windows-утилита управления, не стратегия.
-        [[ "$(basename "$f")" == service.bat ]] && continue
-        install -m 644 "$f" "$sdir/"
-    done
-
-    install -m 644 "$src/bin/"*.bin "$bdir/" 2>/dev/null || die "не скопировались .bin-фейки"
-
-    # Списки не перезаписываем, если уже есть: в них пользовательские домены.
-    # Копируем все файлы (включая .backup), не только *.txt.
-    for f in "$src/lists/"*; do
-        [[ -f "$f" ]] || continue
-        local base; base=$(basename "$f")
-        if [[ -f "$ldir/$base" ]]; then
-            info "сохранён существующий $base"
-        else
-            install -m 644 "$f" "$ldir/"
-        fi
-    done
-
-    # Flowseal создаёт *-user.txt при первом запуске на Windows. Стратегии
-    # ссылаются на них всегда, а nfqws падает на отсутствующем файле.
-    for f in list-general-user.txt list-exclude-user.txt ipset-exclude-user.txt; do
-        [[ -f "$ldir/$f" ]] || { : > "$ldir/$f"; chmod 644 "$ldir/$f"; }
-    done
-
-    chown -R root:root "$sdir" "$bdir" "$ldir"
+    rm -rf "$stage"
+    zf_prepare_flowseal_tree "$src" "$stage" "$old_lists" || die "не удалось подготовить набор Flowseal"
+    zf_activate_flowseal_tree "$stage" "$release" "$current" || die "не удалось активировать набор Flowseal"
+    # Старая схема каталогов (до атомарных наборов): данные перенесены,
+    # дубликаты не нужны.
+    if [[ -d "$ZAPRET_BASE/flowseal-lists" && "$old_lists" == "$ZAPRET_BASE/flowseal-lists" ]]; then
+        rm -rf "$ZAPRET_BASE/flowseal-strategies" "$ZAPRET_BASE/flowseal-bin" "$ZAPRET_BASE/flowseal-lists"
+        info "старые каталоги flowseal-* удалены (данные перенесены в атомарный набор)"
+    fi
+    chown -R root:root "$release"
     printf '%s\n' "$FLOWSEAL_VER" > "$ZAPRET_BASE/.flowseal-version"
-    info "стратегий: $(find "$sdir" -name '*.bat' | wc -l), фейков: $(find "$bdir" -name '*.bin' | wc -l)"
+    info "стратегий: $(find "$current/strategies" -name '*.bat' | wc -l), фейков: $(find "$current/bin" -name '*.bin' | wc -l)"
 }
 
 install_flow() {

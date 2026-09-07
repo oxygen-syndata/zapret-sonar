@@ -13,7 +13,7 @@
 
 set -uo pipefail
 
-ZF_VERSION="1.1.2"
+ZF_VERSION="1.2.0"
 
 ZF_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 
@@ -26,10 +26,18 @@ ZF_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 source "$ZF_DIR/lib/translate.sh"
 source "$ZF_DIR/lib/zconfig.sh"
 source "$ZF_DIR/lib/health.sh"
+source "$ZF_DIR/lib/flowseal.sh"
 
-ZF_STRATEGIES_DIR="${ZF_STRATEGIES_DIR:-$ZF_ZAPRET_BASE/flowseal-strategies}"
-ZF_BIN_DIR="${ZF_BIN_DIR:-$ZF_ZAPRET_BASE/flowseal-bin}"
-ZF_LISTS_DIR="${ZF_LISTS_DIR:-$ZF_ZAPRET_BASE/flowseal-lists}"
+ZF_FLOWSEAL_CURRENT="${ZF_FLOWSEAL_CURRENT:-$ZF_ZAPRET_BASE/flowseal-current}"
+if [[ -d "$ZF_FLOWSEAL_CURRENT" ]]; then
+    ZF_STRATEGIES_DIR="${ZF_STRATEGIES_DIR:-$ZF_FLOWSEAL_CURRENT/strategies}"
+    ZF_BIN_DIR="${ZF_BIN_DIR:-$ZF_FLOWSEAL_CURRENT/bin}"
+    ZF_LISTS_DIR="${ZF_LISTS_DIR:-$ZF_FLOWSEAL_CURRENT/lists}"
+else
+    ZF_STRATEGIES_DIR="${ZF_STRATEGIES_DIR:-$ZF_ZAPRET_BASE/flowseal-strategies}"
+    ZF_BIN_DIR="${ZF_BIN_DIR:-$ZF_ZAPRET_BASE/flowseal-bin}"
+    ZF_LISTS_DIR="${ZF_LISTS_DIR:-$ZF_ZAPRET_BASE/flowseal-lists}"
+fi
 ZF_NFQWS="${ZF_NFQWS:-$ZF_ZAPRET_BASE/nfq/nfqws}"
 ZF_SERVICE="${ZF_SERVICE:-zapret}"
 
@@ -79,6 +87,14 @@ _zf_lock() {
 _zf_flowseal_ver_file() { printf '%s/.flowseal-version\n' "$ZF_ZAPRET_BASE"; }
 
 _zf_nfqws_version() { "$ZF_NFQWS" --version 2>&1 | head -1; }
+
+_zf_json_escape() {
+    local value="$1"
+    value=${value//\\/\\\\}
+    value=${value//\"/\\\"}
+    value=${value//$'\n'/\\n}
+    printf '%s' "$value"
+}
 
 _zf_github_latest_tag() {
     local repo="$1" tag
@@ -226,7 +242,22 @@ cmd_apply() {
     systemctl restart "$ZF_SERVICE" || die "сервис не перезапустился"
 }
 
+cmd_status_json() {
+    local st cur gf ipset fs_ver zap_ver
+    st=$(systemctl is-active "$ZF_SERVICE" 2>/dev/null || true)
+    cur=$(zf_state strategy || true)
+    gf=$(zf_state gamefilter || true)
+    ipset=$(zf_ipset_mode "$ZF_LISTS_DIR")
+    fs_ver=""
+    [[ -f "$(_zf_flowseal_ver_file)" ]] && fs_ver=$(tr -d '[:space:]' < "$(_zf_flowseal_ver_file)" 2>/dev/null)
+    zap_ver=$(_zf_nfqws_version 2>/dev/null || true)
+    printf '{"service":"%s","service_state":"%s","strategy":"%s","gamefilter":"%s","ipset":"%s","zapret":"%s","flowseal":"%s"}\n' \
+        "$(_zf_json_escape "$ZF_SERVICE")" "$(_zf_json_escape "$st")" "$(_zf_json_escape "${cur:-}")" \
+        "$(_zf_json_escape "${gf:-}")" "$(_zf_json_escape "$ipset")" "$(_zf_json_escape "$zap_ver")" "$(_zf_json_escape "$fs_ver")"
+}
+
 cmd_status() {
+    [[ "${1:-}" == "--json" ]] && { cmd_status_json; return; }
     local st cur nf_own nf_all
     st=$(systemctl is-active "$ZF_SERVICE" 2>/dev/null)
     cur=$(zf_state strategy)
@@ -253,7 +284,46 @@ cmd_status() {
     zf_preflight
 }
 
-cmd_check()    { zf_health_check; }
+cmd_check() {
+    if [[ "${1:-}" == "--json" ]]; then
+        local rc
+        zf_health_check >/dev/null 2>&1; rc=$?
+        if (( rc == 0 )); then
+            printf '{"ok":true,"summary":"health-check passed"}\n'
+        else
+            printf '{"ok":false,"summary":"health-check failed"}\n'
+        fi
+        return "$rc"
+    fi
+    zf_health_check
+}
+
+cmd_doctor() {
+    local failed=0 st strategy gamefilter
+    printf 'zapret-sonar doctor\n\n'
+    printf 'Сервис: '
+    st=$(systemctl is-active "$ZF_SERVICE" 2>/dev/null || true)
+    if [[ "$st" == active ]]; then printf 'OK (%s)\n' "$st"; else printf 'FAIL (%s)\n' "${st:-unknown}"; failed=1; fi
+    printf 'Конфиг: '
+    if [[ -r "$ZF_ZAPRET_CONFIG" ]] && bash -n "$ZF_ZAPRET_CONFIG" 2>/dev/null; then printf 'OK\n'; else printf 'FAIL\n'; failed=1; fi
+    printf 'nfqws: '
+    if [[ -x "$ZF_NFQWS" ]]; then printf 'OK (%s)\n' "$(_zf_nfqws_version)"; else printf 'FAIL (%s)\n' "$ZF_NFQWS"; failed=1; fi
+    printf 'Стратегии: '
+    strategy=$(zf_list_strategies 2>/dev/null | wc -l)
+    if (( strategy > 0 )); then printf 'OK (%s)\n' "$strategy"; else printf 'FAIL (нет .bat)\n'; failed=1; fi
+    printf 'Ссылки активной стратегии: '
+    strategy=$(zf_state strategy || true)
+    gamefilter=$(zf_state gamefilter || true)
+    if [[ -n "$strategy" ]] && zf_translate "$ZF_STRATEGIES_DIR/$strategy" "$ZF_BIN_DIR" "$ZF_LISTS_DIR" "${gamefilter:-off}" 2>/dev/null; then
+        local missing=0 file
+        while IFS= read -r file; do [[ -e "$file" ]] || missing=1; done < <(zf_referenced_files)
+        if (( missing == 0 )) && zf_verify "$ZF_NFQWS" >/dev/null 2>&1; then printf 'OK\n'; else printf 'FAIL\n'; failed=1; fi
+    else
+        printf 'SKIP (стратегия не применена)\n'
+    fi
+    printf '\nИтог: %s\n' "$([[ $failed -eq 0 ]] && printf OK || printf FAIL)"
+    return "$failed"
+}
 
 # Служебное: чтение состояния для TUI и скриптов.
 # Состояние сервиса спрашивается через CLI, а не напрямую systemctl: имя
@@ -600,58 +670,30 @@ cmd_update() {
     [[ -n "$src_dir" ]] || die "в архиве не найдено стратегий general*.bat"
     [[ -d "$src_dir/bin" || -d "$src_dir/lists" ]] || die "в архиве Flowseal нет bin/ или lists/"
 
-    printf 'Обновление файлов в %s...\n' "$ZF_ZAPRET_BASE"
-
-    # 1. Бинарные дампы (.bin) — только .bin, не Windows-исполняемые файлы
-    if [[ -d "$src_dir/bin" ]]; then
-        local bf
-        for bf in "$src_dir/bin"/*.bin; do
-            [[ -f "$bf" ]] || continue
-            cp -r "$bf" "$ZF_BIN_DIR/$(basename "$bf")" || { rm -rf "$tmp_dir"; die "ошибка копирования $(basename "$bf")"; }
-        done
-        printf '  • бинарные дампы обновлены\n'
-    fi
-
-    # 2. Списки доменов (НЕ затирая пользовательские *-user.txt)
-    if [[ -d "$src_dir/lists" ]]; then
-        local f fname
-        for f in "$src_dir/lists"/*; do
-            [[ -f "$f" ]] || continue
-            fname=$(basename "$f")
-            [[ "$fname" =~ -user\.txt$ ]] && continue
-            # ipset-all.txt не перезаписываем при режиме none/any —
-            # иначе заглушка/пустой файл молча станет полным списком,
-            # а .backup устареет. loaded-режим обновляем (синхронизируем .backup).
-            if [[ "$fname" == "ipset-all.txt" ]]; then
-                local cur_mode; cur_mode=$(zf_ipset_mode "$ZF_LISTS_DIR")
-                if [[ "$cur_mode" != "loaded" ]]; then
-                    local new_bak="$ZF_LISTS_DIR/ipset-all.txt.newbackup"
-                    cp -r "$f" "$new_bak" || { rm -rf "$tmp_dir"; die "ошибка копирования $fname"; }
-                    mv -f "$new_bak" "$ZF_LISTS_DIR/ipset-all.txt.backup" 2>/dev/null || true
-                    printf '  • ipset-all.txt: режим %s — рабочий файл не тронут, обновлён .backup\n' "$cur_mode"
-                    continue
-                fi
-            fi
-            cp -r "$f" "$ZF_LISTS_DIR/$fname" || { rm -rf "$tmp_dir"; die "ошибка копирования $fname"; }
-        done
-        printf '  • списки доменов обновлены (пользовательские сохранены)\n'
-    fi
-
-    # 3. Стратегии (.bat)
-    local bat_count=0 bname
-    for f in "$src_dir"/*.bat; do
-        [[ -f "$f" ]] || continue
-        bname=$(basename "$f")
-        [[ "$bname" =~ ^(service|service_remove|install_service)\.bat$ ]] && continue
-        cp -r "$f" "$ZF_STRATEGIES_DIR/$bname" || { rm -rf "$tmp_dir"; die "ошибка копирования $bname"; }
-        bat_count=$((bat_count + 1))
-    done
-    printf '  • обновлено %d стратегий (.bat)\n' "$bat_count"
-
-    # 4. Сохранить версию
-    if [[ -n "$latest" ]]; then
-        printf '%s\n' "$latest" > "$(_zf_flowseal_ver_file)"
-    fi
+    printf 'Подготовка нового набора Flowseal в staging...\n'
+    local old_lists="$ZF_LISTS_DIR"
+    local stage="$ZF_ZAPRET_BASE/.flowseal-stage.$$"
+    local release
+    release="$ZF_ZAPRET_BASE/.flowseal-releases/${latest:-main}-$(date +%s)-$$"
+    rm -rf "$stage"
+    zf_prepare_flowseal_tree "$src_dir" "$stage" "$old_lists" \
+        || die "не удалось подготовить новый набор Flowseal"
+    local current="$ZF_ZAPRET_BASE/flowseal-current" old_target=""
+    [[ -L "$current" ]] && old_target=$(readlink "$current")
+    zf_activate_flowseal_tree "$stage" "$release" "$current" \
+        || die "не удалось атомарно активировать новый набор Flowseal"
+    # Snapshots: держим два последних — текущий и предыдущий для отката.
+    local old_rel
+    while IFS= read -r old_rel; do
+        [[ -z "$old_rel" ]] && continue
+        rm -rf "$ZF_ZAPRET_BASE/.flowseal-releases/$old_rel"
+    done < <(ls -1dt "$ZF_ZAPRET_BASE/.flowseal-releases"/*/ 2>/dev/null | sed 's|.*/\([^/]*\)/$|\1|' | tail -n +3)
+    ZF_STRATEGIES_DIR="$ZF_ZAPRET_BASE/flowseal-current/strategies"
+    ZF_BIN_DIR="$ZF_ZAPRET_BASE/flowseal-current/bin"
+    ZF_LISTS_DIR="$ZF_ZAPRET_BASE/flowseal-current/lists"
+    chown -R root:root "$release"
+    printf '%s\n' "${latest:-main}" > "$(_zf_flowseal_ver_file)"
+    printf '  • стратегии, .bin и списки переключены одним набором\n'
 
     # 5. Пересобрать конфиг активной стратегии
     local cur_strat; cur_strat=$(zf_state strategy)
@@ -660,7 +702,18 @@ cmd_update() {
         local gf ips
         gf=$(zf_state gamefilter); gf="${gf:-off}"
         ips=$(zf_ipset_mode "$ZF_LISTS_DIR")
-        cmd_apply "$cur_strat" "$gf" "$ips"
+        if ! cmd_apply "$cur_strat" "$gf" "$ips"; then
+            if [[ -n "$old_target" ]]; then
+                local restore_link="${current}.restore.$$"
+                if ln -s "$old_target" "$restore_link" && mv -Tf "$restore_link" "$current"; then
+                    ZF_STRATEGIES_DIR="$current/strategies"
+                    ZF_BIN_DIR="$current/bin"
+                    ZF_LISTS_DIR="$current/lists"
+                    cmd_apply "$cur_strat" "$gf" "$ips" >/dev/null 2>&1 || true
+                fi
+            fi
+            die "не удалось применить активную стратегию, старый набор Flowseal восстановлен"
+        fi
     fi
 
     printf '\nОбновление Flowseal завершено'
@@ -736,8 +789,15 @@ cmd_do_upgrade() {
         || die "в sha256sum.txt нет записи для $arch/nfqws — целостность не подтверждена"
     printf '  sha256 подтверждён\n'
 
+    local binary name
+    for name in nfqws ip2net mdig; do
+        binary="$root/binaries/$arch/$name"
+        [[ -f "$binary" ]] || die "в релизе нет бинарника для $arch/$name"
+        grep -q "binaries/$arch/$name" "$tmp_dir/sha256sum.txt" \
+            || die "в sha256sum.txt нет записи для $arch/$name — целостность не подтверждена"
+    done
+
     local nfqws_bin="$root/binaries/$arch/nfqws"
-    [[ -f "$nfqws_bin" ]] || die "в релизе нет бинарника для $arch"
 
     printf 'Обновление бинарников в %s...\n' "$ZF_ZAPRET_BASE"
     local old_ver; old_ver=$(_zf_nfqws_version)
@@ -752,8 +812,8 @@ cmd_do_upgrade() {
     [[ -f "$ZF_ZAPRET_BASE/mdig/mdig" ]] && cp -a "$ZF_ZAPRET_BASE/mdig/mdig" "$bak_dir/mdig.old" 2>/dev/null
 
     install -Dm755 "$nfqws_bin" "$ZF_NFQWS"
-    [[ -f "$root/binaries/$arch/ip2net" ]] && install -Dm755 "$root/binaries/$arch/ip2net" "$ZF_ZAPRET_BASE/ip2net/ip2net"
-    [[ -f "$root/binaries/$arch/mdig" ]]   && install -Dm755 "$root/binaries/$arch/mdig"   "$ZF_ZAPRET_BASE/mdig/mdig"
+    install -Dm755 "$root/binaries/$arch/ip2net" "$ZF_ZAPRET_BASE/ip2net/ip2net"
+    install -Dm755 "$root/binaries/$arch/mdig"   "$ZF_ZAPRET_BASE/mdig/mdig"
 
     printf '  запускаю сервис...\n'
     if ! systemctl start "$ZF_SERVICE" 2>/dev/null; then
@@ -869,6 +929,7 @@ cmd_help() {
         site)      printf 'Управление списком list-general-user.txt.\n  site <домен> — добавить\n  site --list — показать\n  site --remove <домен> — удалить\n  Поддомены учитываются автоматически.\n' ;;
         start|stop|restart|enable|disable) printf 'Управление сервисом zapret.\n  enable/disable — автозапуск.\n' ;;
         log)       printf 'Логи сервиса (journalctl).\n  log — последние 50 строк\n  log -f — следить в реальном времени\n  log "1 hour ago" — за период\n' ;;
+        doctor)    printf 'Сводная диагностика сервиса, конфига, nfqws и активной стратегии.\n' ;;
         *)         usage ;;
     esac
 }
@@ -895,6 +956,7 @@ zapret-sonar — стратегии Flowseal поверх zapret v1
   start|stop|restart    управление сервисом
   enable|disable        автозапуск сервиса
   log [-f] [период]     логи сервиса (journalctl)
+  doctor                сводная диагностика установки и активной стратегии
 
   --debug               подробный вывод (трейс, verbose curl)
   --version|-v          версия
@@ -919,7 +981,7 @@ unset _zf_a _zf_debug_args
 # --help для подкоманд: sonar try --help → справка по try
 if [[ "${2:-}" == "--help" || "${2:-}" == "-h" ]]; then
     case "$1" in
-        list|use|status|check|try|baseline|update|upgrade|uninstall|gamefilter|ipset|site|start|stop|restart|log)
+        list|use|status|check|try|baseline|update|upgrade|uninstall|gamefilter|ipset|site|start|stop|restart|log|doctor)
             cmd_help "$1"; exit 0 ;;
     esac
 fi
@@ -939,6 +1001,7 @@ case "${1:-}" in
     site)       shift; cmd_site "$@" ;;
     start|stop|restart|enable|disable) cmd_service "$1" ;;
     log)        shift; cmd_log "$@" ;;
+    doctor)     shift; cmd_doctor "$@" ;;
     help)       shift; cmd_help "$@" ;;
     _apply)     shift; cmd_apply "$@" ;;
     _update)    shift; cmd_update "$@" ;;

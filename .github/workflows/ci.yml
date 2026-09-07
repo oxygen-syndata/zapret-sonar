@@ -39,3 +39,6 @@ jobs:
 
       - name: Run smoke test
         run: bash tests/smoke-translate.sh
+
+      - name: Test Flowseal staging
+        run: bash tests/flowseal-tree.sh

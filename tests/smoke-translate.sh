@@ -29,6 +29,8 @@ set WF_UDP=443,50000-50100
   --wf-udp=443 --wf-raw=70726f78785f70726f7879
 
 exit /b
+set AFTER_WINWS=must-not-leak
+call another-command.bat
 BAT
 
 # Поддельные .bin и списки (пустые) — пути должны совпадать с %BIN%/%LISTS%
@@ -72,6 +74,13 @@ if [[ "$ZF_OPT" != *"--dpi-desync=fake"* ]]; then
     exit 1
 fi
 echo "PASS: expected arguments present"
+
+# Batch-команды после winws.exe не должны попадать в Linux-конфигурацию.
+if [[ "$ZF_OPT" == *"exit"* || "$ZF_OPT" == *"AFTER_WINWS"* || "$ZF_OPT" == *"another-command"* ]]; then
+    echo "FAIL: commands after winws.exe leaked into ZF_OPT"
+    exit 1
+fi
+echo "PASS: trailing batch commands ignored"
 
 # Проверка referenced_files
 if zf_referenced_files | grep -q "list-general.txt"; then

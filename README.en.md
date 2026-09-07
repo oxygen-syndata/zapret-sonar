@@ -6,6 +6,8 @@
 
 Linux wrapper for [zapret](https://github.com/bol-van/zapret) v1 with [Flowseal](https://github.com/Flowseal/zapret-discord-youtube) strategies. Translates Flowseal `.bat` strategies into `nfqws` arguments for Linux — no Wine, no manual conversion.
 
+The project targets Linux with `systemd` and uses `nfqws` from zapret v1. It is not a VPN: results depend on the provider and the specific block.
+
 ## What it does
 
 Flowseal publishes DPI bypass strategies as Windows `.bat` files. zapret-sonar translates them into `nfqws` arguments and manages the lifecycle: installation, strategy selection, testing, sweep, updates.
@@ -15,6 +17,7 @@ sonar list              # list strategies (* = active)
 sonar use alt12         # apply strategy (partial name match)
 sonar try               # sweep all strategies, show working ones
 sonar check             # does bypass work right now
+sonar doctor            # installation and active strategy diagnostics
 sonar status            # service, strategy, versions, environment
 sonar update            # update Flowseal strategies
 sonar upgrade           # update zapret engine (nfqws)
@@ -54,8 +57,10 @@ The installer downloads zapret v1 (bol-van) and Flowseal strategies, verifies sh
 |---------|-------------|
 | `list` | List strategies (`*` = active) |
 | `use <strategy>` | Apply (partial name: `use alt12`) |
-| `status` | Service, strategy, zapret/Flowseal versions, environment |
+| `status [--json]` | Service, strategy, zapret/Flowseal versions, environment |
 | `check` | Does bypass work (HTTP check of blocked resources) |
+| `check --json` | Machine-readable health-check summary |
+| `doctor` | Combined service, config, nfqws and active strategy diagnostics |
 | `try [--keep]` | Sweep all strategies, show working ones. Regression control: a strategy that unblocks but breaks previously working sites is not considered working. `--keep` — keep first working |
 | `baseline` | What's blocked WITHOUT bypass (service stops during measurement) |
 | `update [--force]` | Update strategies, lists and `.bin` from Flowseal GitHub |
