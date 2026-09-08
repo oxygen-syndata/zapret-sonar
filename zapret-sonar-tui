@@ -42,6 +42,7 @@ ASCII_LOGO='
 ░▒▓███████▓▒░ ░▒▓██████▓▒░░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░'
 
 header_line() {
+    local wait_for_update="${1:-0}"
     local svc strat gf ips auto
     svc=$("$CLI" _state service 2>/dev/null)
     strat=$("$CLI" _state strategy 2>/dev/null)
@@ -72,7 +73,12 @@ header_line() {
         "$C_DIM" "$C_OFF" "${ips:-?}"
 
     # Статус обновлений: «актуально» или список доступных версий.
-    local upd; upd=$("$CLI" _update_status 2>/dev/null)
+    local upd
+    if (( wait_for_update )); then
+        upd=$("$CLI" _update_status_wait 2>/dev/null)
+    else
+        upd=$("$CLI" _update_status 2>/dev/null)
+    fi
     if [[ "$upd" == "актуально" ]]; then
         printf '%sОбновления%s %s%s%s' \
             "$C_DIM" "$C_OFF" "$C_OK" "актуально" "$C_OFF"
@@ -81,6 +87,18 @@ header_line() {
             "$C_DIM" "$C_OFF" "$C_WARN" "$upd" "$C_OFF"
     fi
 }
+
+full_header() {
+    local wait_for_update="${1:-0}"
+    printf '%s%s%s\n\n' "$C_DIM" "$ASCII_LOGO" "$C_OFF"
+    header_line "$wait_for_update"
+    printf '\n'
+}
+
+if [[ "${1:-}" == "--header-wait" ]]; then
+    full_header 1
+    exit 0
+fi
 
 # --- Выбор стратегии ---------------------------------------------------------
 # Preview показывает разобранную стратегию: методы, порты, списки. Это
@@ -198,7 +216,12 @@ action_service() {
 
 # --- Главное меню ------------------------------------------------------------
 main_menu() {
-    local choice
+    local choice refresh_cmd
+    local -a refresh_opt=()
+    printf -v refresh_cmd 'sleep 0.2; %q --header-wait' "${BASH_SOURCE[0]}"
+    if printf 'x\n' | fzf --bind='start:bg-transform-header(echo test)' --filter=x >/dev/null 2>&1; then
+        refresh_opt=(--bind="start:bg-transform-header($refresh_cmd)")
+    fi
     while :; do
         # Порядок — по частоте использования: сначала подбор стратегии (главная
         # задача), потом проверки, потом настройки и сервис.
@@ -207,7 +230,7 @@ main_menu() {
             'Подобрать рабочую стратегию автоматически' \
             'Выбрать стратегию вручную' \
             "$SEP_CHECK" \
-            'Проверить, работает ли обход' \
+            'Проверить HTTP/CDN-цели' \
             'Показать, что заблокировано без обхода' \
             'Состояние и окружение' \
             "$SEP_CONF" \
@@ -222,13 +245,14 @@ main_menu() {
             | fzf --ansi --layout=reverse --height=100% --border=rounded \
                   --prompt='  ' \
                   --pointer='▸' \
-                  --header="${C_DIM}${ASCII_LOGO}${C_OFF}"$'\n\n'"$(header_line)"$'\n' \
+                  --header="$(full_header)" \
+                  "${refresh_opt[@]}" \
                   --header-first \
                   --no-info)
         case "$choice" in
             'Подобрать рабочую стратегию автоматически') action_try ;;
             'Выбрать стратегию вручную')                 action_use ;;
-            'Проверить, работает ли обход')              printf '\n'; "$CLI" check; pause ;;
+            'Проверить HTTP/CDN-цели')                    printf '\n'; "$CLI" check; pause ;;
             'Показать, что заблокировано без обхода')    printf '\n'; "$CLI" baseline; pause ;;
             'Состояние и окружение')                     printf '\n'; "$CLI" status; pause ;;
             'Добавить сайт в список обхода')             action_site ;;

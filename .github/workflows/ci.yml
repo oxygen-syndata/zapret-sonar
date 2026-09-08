@@ -42,3 +42,15 @@ jobs:
 
       - name: Test Flowseal staging
         run: bash tests/flowseal-tree.sh
+
+      - name: Test runtime safety
+        run: bash tests/runtime-safety.sh
+
+      - name: Test update transaction
+        run: bash tests/update-transaction.sh
+
+      - name: Test reinstall migration
+        run: bash tests/install-migration.sh
+
+      - name: Test pinned Flowseal release
+        run: bash tests/flowseal-release.sh

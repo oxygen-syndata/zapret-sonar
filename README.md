@@ -1,200 +1,194 @@
 # zapret-sonar
 
+[Русский](README.md) | [English](README.en.md)
+
 <p align="center">
   <img src=".github/social-preview.png" alt="zapret-sonar" width="640">
 </p>
 
-Linux-обёртка над [zapret](https://github.com/bol-van/zapret) v1 со стратегиями [Flowseal](https://github.com/Flowseal/zapret-discord-youtube). Трансляция `.bat`-стратегий Flowseal в аргументы `nfqws` для Linux — без Wine, без ручной конвертации.
+Linux-обёртка над [zapret](https://github.com/bol-van/zapret) v1 со стратегиями [Flowseal](https://github.com/Flowseal/zapret-discord-youtube). Переводит `.bat`-стратегии Flowseal в аргументы `nfqws` и управляет установкой, подбором, проверкой и обновлением.
 
-Проект рассчитан на Linux с `systemd` и использует `nfqws` из zapret v1. Это не VPN: результат зависит от провайдера и конкретной блокировки.
+> zapret v1 находится в режиме EOL: upstream выпускает только исправления ошибок. zapret2 пока не поддерживается и исследуется отдельно.
 
-## Что это
-
-Flowseal публикует стратегии обхода DPI как `.bat`-файлы для Windows. zapret-sonar переводит их в аргументы `nfqws` и управляет жизненным циклом: установка, выбор стратегии, проверка, перебор, обновление.
-
-```bash
-sonar list              # список стратегий (* — применённая)
-sonar use alt12         # применить стратегию (по части имени)
-sonar try               # перебрать все, показать рабочие
-sonar check             # работает ли обход сейчас
-sonar doctor            # сводная диагностика установки и стратегии
-sonar status            # состояние сервиса, версии, окружения
-sonar update            # обновить стратегии Flowseal
-sonar upgrade           # обновить движок zapret (nfqws)
-```
-
-## Установка
+## Быстрый старт
 
 ```bash
 git clone https://github.com/oxygen-syndata/zapret-sonar.git
 cd zapret-sonar
 sudo ./install.sh
+sudo sonar try --keep
+sonar check
+sudo sonar enable
 ```
 
-Установщик скачивает zapret v1 (bol-van) и стратегии Flowseal, проверяет sha256 бинарников, ставит systemd-юнит и сам zapret-sonar в `/opt/zapret/`.
+`try --keep` оставляет первую стратегию, прошедшую HTTP-проверки без обнаруженных регрессий. Это не означает, что она объективно лучшая для всех сайтов и протоколов. `enable` включает автозапуск уже настроенного сервиса.
 
-**Требования:** bash 4+, curl, tar, sha256sum, systemd, nftables (или iptables), fzf (для TUI — опционально).
+На сервере или удалённой машине `try` временно останавливает и многократно перезапускает сервис, поэтому текущие соединения могут прерываться.
 
-**Тестировалось на:** CachyOS (Arch, x86_64), Ubuntu Server 26.04 LTS (x86_64). Должно работать на любом Linux с systemd и nftables.
+## Что это и что это не
 
-## Как это работает
+- GNU/Linux-инструмент, ориентированный на `systemd`, `nfqws` и nftables.
+- Не VPN и не прокси: трафик не отправляется на сторонний сервер.
+- Не самостоятельный набор стратегий: стратегии и списки приходят из Flowseal.
+- Результат зависит от провайдера, вида блокировки и конкретного протокола.
+- Не устанавливайте поверх другого zapret: процессы и правила NFQUEUE будут конфликтовать.
+- `sonar check` проверяет доступность заданных HTTP/CDN-целей. Успех не доказывает работу Discord Voice, QUIC, видео YouTube или именно механизма zapret.
 
+## Если не заработало
+
+```bash
+sonar doctor
+sonar status
+sonar baseline
+sonar log
 ```
-.bat Flowseal  →  translate.sh  →  NFQWS_OPT  →  config  →  systemctl restart
-                                      ↓
-                              nfqws --dry-run (валидация)
-```
 
-1. **Трансляция** — `lib/translate.sh` парсит `.bat`, извлекает аргументы `nfqws`, адаптирует пути (Windows → Linux), переводит CRLF.
-2. **Санитизация** — результат проверяется на shell-метасимволы (конфиг исполняется через `.` от root).
-3. **Валидация** — `nfqws --dry-run` разбирает аргументы своим парсером до записи конфига.
-4. **Запись** — конфиг собирается атомарно (mktemp + mv), с маркерами состояния.
-5. **Перезапуск** — `systemctl restart zapret`.
+`baseline` сам временно останавливает активный сервис, выполняет замер без обхода и восстанавливает его состояние.
+
+Проверьте также:
+
+1. Secure DNS. DoT/DoH рекомендуется и необходим при DNS-подмене провайдером. `sonar status` видит системный DoT через `systemd-resolved`, но не браузерный DoH.
+2. IPv6. Текущий конфиг задаёт `DISABLE_IPV6=1`; доступный IPv6 может обходить `nfqws`.
+3. Туннели. Клиентский full-tunnel может направить проверки мимо локального `nfqws`. Серверный WG/AWG, чей транзит намеренно проходит через NFQUEUE, сам по себе не является ошибкой.
+4. Если ни одна стратегия не помогает, используйте `/opt/zapret/blockcheck.sh` для более глубокого подбора параметров.
+
+## Требования
+
+- GNU/Linux с `systemd`;
+- bash 4+, curl, tar, sha256sum, flock, iproute2 и стандартные GNU coreutils/findutils/grep/sed;
+- nftables (рекомендуется) или iptables;
+- `unzip` нужен только для fallback-обновления из ветки Flowseal;
+- fzf для TUI (опционально);
+- git для показанного способа установки.
+
+Проверено на CachyOS (Arch, x86_64) и Ubuntu Server 26.04 LTS (x86_64). Другие дистрибутивы с совместимым GNU userspace могут работать, но пока не входят в проверенную матрицу.
 
 ## Команды
 
-| Команда | Описание |
-|--------|----------|
-| `list` | Список стратегий (`*` — применённая) |
-| `use <стратегия>` | Применить (можно частью имени: `use alt12`) |
-| `status [--json]` | Сервис, стратегия, версии zapret/Flowseal, окружение |
-| `check` | Работает ли обход (HTTP-проверка заблокированных ресурсов) |
-| `check --json` | Краткий машинно-читаемый результат health-check |
-| `doctor` | Сводная диагностика сервиса, конфига, nfqws и активной стратегии |
-| `try [--keep]` | Перебрать все стратегии, показать рабочие. С контролем регрессии: стратегия, снявшая блокировку, но сломавшая работавшие сайты, рабочей не считается. `--keep` — оставить первую заработавшую |
-| `baseline` | Что заблокировано БЕЗ обхода (сервис останавливается на время замера) |
-| `update [--force]` | Обновить стратегии, списки и `.bin` из GitHub Flowseal |
-| `upgrade [--force]` | Обновить движок zapret (nfqws, ip2net, mdig) с проверкой sha256 |
-| `uninstall` | Полное удаление (сервис, юнит, файлы, симлинки) |
-| `gamefilter [режим]` | `off\|tcp\|udp\|both` — обход для игр (порты >1023) |
-| `ipset [режим]` | `none\|any\|loaded` — фильтр по IP из `ipset-all.txt` |
-| `site <домен>` | Добавить домен в `list-general-user.txt` |
-| `site --list` | Показать список доменов |
-| `site --remove <домен>` | Удалить домен из списка |
-| `start\|stop\|restart` | Управление сервисом |
-| `enable\|disable` | Автозапуск сервиса |
-| `log [-f] [период]` | Логи сервиса (journalctl) |
-| `--debug` | Подробный вывод (трейс, verbose curl) |
-| `--version` | Версия |
+### Подбор стратегии
+
+| Команда | Назначение |
+|---|---|
+| `sonar list` | Показать стратегии (`*` — применённая) |
+| `sudo sonar use alt12` | Применить стратегию по полному имени или уникальной части |
+| `sudo sonar try [--keep]` | Перебрать стратегии; `--keep` оставляет первую прошедшую |
+| `sonar baseline` | Измерить доступность целей без обхода с безопасным восстановлением сервиса |
+
+### Диагностика
+
+| Команда | Назначение |
+|---|---|
+| `sonar check [--json]` | Проверить HTTP/CDN-цели; результат содержит `passed`, `failed`, `skipped` |
+| `sonar doctor` | Проверить сервис, конфиг, nfqws и активную стратегию |
+| `sonar status [--json]` | Показать состояние, режимы и версии; JSON не включает preflight |
+| `sonar log [-f] [период]` | Показать журнал systemd |
+| `sonar --debug <команда>` | Включить shell trace и подробный curl |
+
+`PASS` означает успешную конкретную проверку, `FAIL` — ошибку, `SKIP` — цель не дала проверяемого результата. Пропущенная проверка не считается пройденной.
+
+### Настройка
+
+| Команда | Назначение |
+|---|---|
+| `sonar site <домен>` | Добавить домен; затем нужен `sudo sonar restart` |
+| `sonar site --list` | Показать пользовательские домены |
+| `sonar site --remove <домен>` | Удалить домен; затем нужен `sudo sonar restart` |
+| `sudo sonar gamefilter off\|tcp\|udp\|both` | Настроить игровые порты и сразу применить конфиг |
+| `sudo sonar ipset none\|any\|loaded` | Изменить IP-фильтр; затем нужен `sudo sonar restart` |
+
+### Обновление и сервис
+
+| Команда | Назначение |
+|---|---|
+| `sudo sonar update [--force]` | Обновить стратегии, списки и `.bin` Flowseal |
+| `sudo sonar upgrade [--force]` | Обновить `nfqws`, `ip2net`, `mdig` с проверкой sha256 |
+| `sudo sonar start\|stop\|restart` | Управлять сервисом |
+| `sudo sonar enable\|disable` | Управлять автозапуском |
+| `sudo sonar uninstall` | Полностью удалить сервис и `/opt/zapret` |
 
 ## TUI
 
-Интерактивный интерфейс на fzf: выбор стратегии с preview, проверки, настройки.
-
 ```bash
-sonar-tui    # или zapret-sonar-tui
+sonar-tui
 ```
 
-![Главное меню](screenshots/tui-main-menu.png)
+TUI на fzf показывает состояние сервиса и обновлений, позволяет выбирать стратегии с preview, запускать проверки и менять настройки. Проверка обновлений не блокирует интерфейс: на холодном кэше статус меняется с «проверка…» на результат автоматически. Для live-обновления header нужен fzf с `bg-transform-header`; на старых версиях статус обновится после перерисовки меню.
 
-![Выбор стратегии с preview](screenshots/tui-strategy-preview.png)
+<img src="screenshots/tui-main-menu.png" alt="Главное меню" width="700">
 
-![sonar check — 7/7](screenshots/sonar-check.png)
+<details>
+<summary>Остальные скриншоты</summary>
 
-![sonar status](screenshots/sonar-status.png)
+<img src="screenshots/tui-strategy-preview.png" alt="Выбор стратегии с preview" width="700">
 
-TUI проверяет обновления при запуске: в шапке видно, актуальны ли стратегии и движок. Обновление — вручную, кнопками в меню.
+<img src="screenshots/sonar-check.png" alt="sonar check" width="700">
 
-## Обновления
+<img src="screenshots/sonar-status.png" alt="sonar status" width="700">
 
-При запуске CLI/TUI проверяется наличие новых версий Flowseal и zapret. Проверка идёт в фоне, не блокирует работу — результат кэшируется на час. Обновление остаётся за пользователем:
+<img src="screenshots/sonar-doctor.png" alt="sonar doctor" width="700">
 
-```bash
-sudo sonar update     # обновить стратегии Flowseal
-sudo sonar upgrade    # обновить движок zapret
+</details>
+
+## Как это работает
+
+```text
+.bat Flowseal -> translate.sh -> NFQWS_OPT -> nfqws --dry-run -> config -> systemctl restart
 ```
 
-CLI показывает уведомление после выполнения команды, если есть обновление. TUI показывает статус в шапке.
+1. `lib/translate.sh` извлекает аргументы `winws.exe`, адаптирует пути и отбрасывает Windows batch-команды.
+2. Результат проверяется на shell-метасимволы, поскольку config загружается от root.
+3. `nfqws --dry-run` проверяет аргументы и ссылки на файлы до изменения конфига.
+4. Конфиг записывается атомарно и содержит маркеры выбранной стратегии и режимов.
+5. Сервис перезапускается только после успешной проверки.
 
-## Отладка
+## Обновления и восстановление
 
-```bash
-sonar --debug check    # трейс команд, verbose curl
-sonar --debug use alt9 # детальный вывод трансляции и применения
-```
+- Flowseal собирается в staging, затем весь набор переключается атомарным симлинком `flowseal-current`.
+- Версия фиксируется, а старые snapshots удаляются только после успешного применения активной стратегии.
+- При ошибке возвращается предыдущий набор, повторно проверяются конфиг и сервис, нерабочий snapshot удаляется.
+- Переустановка сначала пересобирает старый конфиг с новыми путями и только затем удаляет legacy-каталоги.
+- Установщик и обновление движка создают резервные копии и восстанавливают предыдущее состояние при ошибке; ошибка самого rollback сообщается отдельно.
+- Фоновый update-check хранит пользовательский кэш в `${XDG_CACHE_HOME:-~/.cache}/zapret-sonar`; lock изменяющих операций находится в `/run/zapret-sonar`.
 
 ## Безопасность
 
-- **Конфиг исполняется через `.` от root** — поэтому генерируется целиком из транслированной стратегии и проверяется на shell-метасимволы. Пользовательский ввод в конфиг не попадает.
-- **sha256** — бинарники zapret сверяются с `sha256sum.txt` из релиза. У Flowseal sha256-файла нет — доверяем TLS.
-- **Файлы в `/opt` принадлежат root** — записываемый пользователем бинарник, запускаемый от root, это готовая эскалация.
-- **sudoers не трогается** — пароль спрашивается штатным sudo, NOPASSWD намеренно нет.
-- **Бэкапы** — перед каждым обновлением nfqws старые бинарники копируются в `.bak/`; при ошибке сервиса — автооткат.
+- Файлы установки в `/opt` принадлежат root; `sudoers` не изменяется.
+- Исполняемый shell-конфиг создаётся только из санитизированной стратегии.
+- Бинарники zapret сверяются с `sha256sum.txt` upstream-релиза.
+- У Flowseal нет опубликованного checksum-файла; архив загружается по TLS и проверяется структурно.
+- Все операции, изменяющие конфиг, списки, snapshots, бинарники или сервис, используют общий root-owned lock.
 
-## Ограничения
+## Ограничения проверок
 
-Инструмент честен о том, что он не делает:
+- YouTube throttling на `googlevideo.com` не измеряется достоверно.
+- Discord Voice и другие UDP-сценарии не проверяются.
+- QUIC/HTTP3 не проверяется.
+- ClientHello curl отличается от браузерного, включая многопакетный TLS.
+- `check` может пройти и без zapret, если цели доступны у провайдера; дифференциальную оценку делает `try` относительно baseline.
 
-- **YouTube-троттлинг не измеряется.** `www.youtube.com` отвечает HTTP 200 без обхода — блокируется не домен, а троттлинг `googlevideo.com`. Проверка доступа к YouTube не означает, что видео не тормозит.
-- **Discord Voice (UDP) не тестируется.** Голосовые серверы Discord на UDP 50000–50100 + STUN. curl не работает по UDP. «Discord работает» = текст работает, голос может не работать.
-- **QUIC (HTTP/3) не тестируется.** Браузеры ходят на YouTube по HTTP/3. curl по умолчанию — по TCP/TLS.
-- **ClientHello curl меньше браузерного.** Браузеры шлют постквантовый key share (~1800 байт, два TCP-сегмента). Стратегия может «работать» по curl и не работать в браузере.
-- **IPv6 отключён.** `DISABLE_IPV6=1` в конфиге. Если у провайдера рабочий IPv6, трафик YouTube/Google по v6 идёт мимо nfqws. Preflight предупреждает об этом.
+## Удаление
 
-Для глубокого подбора стратегий по протоколам (TLS 1.2/1.3/QUIC) используйте `blockcheck.sh` из zapret (лежит в `/opt/zapret/`).
+`sudo sonar uninstall` удаляет сервис, unit, правила, симлинки и весь `/opt/zapret`, включая `config`, `config.orig`, snapshots и пользовательские `*-user.txt`. Скопируйте нужные данные заранее.
 
 ## Структура
 
-```
-zapret-sonar              CLI (главный скрипт)
-zapret-sonar-tui          TUI на fzf
-install.sh                Установщик
-lib/translate.sh          Парсер .bat → NFQWS_OPT
-lib/zconfig.sh            Генерация конфига, state-маркеры, ipset-режимы
-lib/health.sh             Health-check, preflight, baseline/scoring
+```text
+zapret-sonar                 CLI
+zapret-sonar-tui             TUI на fzf
+install.sh                   установщик
+lib/translate.sh             парсер .bat -> NFQWS_OPT
+lib/zconfig.sh               генерация конфига и ipset-режимы
+lib/health.sh                HTTP/content checks, baseline и scoring
+lib/flowseal.sh              staging, activation, rollback и pruning
+tests/                       smoke, safety и pinned Flowseal tests
+.github/workflows/ci.yml     ShellCheck, syntax и regression tests
+contrib/bash-completion.sh   completion для bash
 ```
 
 ## Благодарности
 
 - [bol-van/zapret](https://github.com/bol-van/zapret) — движок обхода DPI
 - [Flowseal/zapret-discord-youtube](https://github.com/Flowseal/zapret-discord-youtube) — стратегии
-
-## Troubleshooting
-
-### Ни одна стратегия не работает
-
-1. Проверьте Secure DNS: `sonar status` → в окружении не должно быть `WARN DNS без шифрования`. DoT/DoH обязателен — без него провайдер видит и подменяет DNS-запросы, и стратегии врут.
-2. Проверьте туннели: `sonar status` → если активны `tun*`/`wg*`/`awg*`, трафик может идти мимо nfqws. Остановите VPN перед проверкой.
-3. Проверьте IPv6: `sonar status` → если активен IPv6, трафик YouTube/Google идёт мимо nfqws (конфиг задаёт `DISABLE_IPV6=1`).
-4. Запустите `sudo sonar try` — перебор всех стратегий с контролем регрессий.
-
-### Discord работает, но голос нет
-
-Голосовые серверы Discord используют UDP 50000–50100 + STUN. Health-check `sonar check` тестирует только TCP/HTTP — голос не проверяется. Это известное ограничение. Если текст работает, а голос нет — проблема в UDP-блокировке, стратегию нужно подбирать под UDP (gamefilter).
-
-### try ничего не нашёл
-
-1. Убедитесь, что baseline показал заблокированные цели: `sonar baseline` (при остановленном сервисе).
-2. Если ни одна цель не заблокирована — перебор бессмысленен. Возможно, у провайдера другой механизм блокировки (DNS, IPv6).
-3. Используйте `blockcheck.sh` из zapret (в `/opt/zapret/`) — он перебирает параметры по протоколам TLS 1.2/1.3/QUIC и выдаёт готовую команду.
-4. Проверьте, что Secure DNS включён (DoT/DoH в настройках системы или роутера).
-
-### После обновления nfqws сервис не поднимается
-
-`sonar upgrade` автоматически откатывается к старым бинарникам при ошибке. Если откат не помог:
-```bash
-sudo sonar upgrade --force   # переустановит nfqws
-```
-
-### Как откатить стратегию к исходному конфигу zapret
-
-При первом применении стратегии сохраняется оригинальный конфиг:
-```bash
-sudo cp /opt/zapret/config.orig /opt/zapret/config
-sudo systemctl restart zapret
-```
-
-### Что удаляет uninstall
-
-Сервис (stop + disable), systemd-юнит, nftables-таблица `inet zapret`, симлинки (`zapret-sonar`, `sonar`, `zapret-sonar-tui`, `sonar-tui`), рабочая директория `/opt/zapret`. config.orig восстанавливается перед удалением каталога.
-
-### Логи сервиса
-
-```bash
-sonar log                # последние 50 строк
-sonar log -f             # следить в реальном времени
-sonar log "1 hour ago"   # за последний час
-```
 
 ## Лицензия
 

@@ -13,9 +13,10 @@
 
 set -uo pipefail
 
-ZF_VERSION="1.2.0"
+ZF_VERSION="1.2.1"
 
-ZF_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+ZF_SELF="$(readlink -f "${BASH_SOURCE[0]}")"
+ZF_DIR="$(cd "$(dirname "$ZF_SELF")" && pwd)"
 
 # Пути и имя сервиса, зафиксированные установщиком. Нужны, когда ставили не в
 # /opt/zapret (например, рядом с уже занятым каталогом): без этого CLI искал бы
@@ -71,14 +72,23 @@ need_root() {
     return 1
 }
 
-# flock: предотвращает параллельный запуск try/update/upgrade — они рестартят
-# сервис и перезаписывают конфиг, одновременный запуск — хаос.
-_ZF_LOCK="/tmp/zapret-sonar.lock"
+# Общий lock для всех операций, меняющих конфиг, бинарники, списки или сервис.
+# Каталог под /run создаётся root и недоступен для подмены обычным пользователем.
+_ZF_RUNTIME_DIR="${ZF_RUNTIME_DIR:-/run/zapret-sonar}"
+_ZF_LOCK="$_ZF_RUNTIME_DIR/operations.lock"
+_ZF_LOCK_HELD="${ZF_LOCK_HELD:-0}"
 _zf_lock() {
+    (( _ZF_LOCK_HELD )) && return 0
+    [[ ! -L "$_ZF_RUNTIME_DIR" ]] || die "небезопасный runtime-каталог: $_ZF_RUNTIME_DIR"
+    install -d -m 0755 "$_ZF_RUNTIME_DIR" || die "не удалось создать $_ZF_RUNTIME_DIR"
+    [[ "$(stat -c %u "$_ZF_RUNTIME_DIR" 2>/dev/null)" == "$EUID" ]] \
+        || die "неверный владелец runtime-каталога: $_ZF_RUNTIME_DIR"
+    [[ ! -L "$_ZF_LOCK" ]] || die "lock-файл не должен быть симлинком: $_ZF_LOCK"
     exec 9>"$_ZF_LOCK"
     if ! flock -n 9; then
         die "операция уже выполняется в другом терминале"
     fi
+    _ZF_LOCK_HELD=1
 }
 
 # --- Версии ------------------------------------------------------------------
@@ -89,11 +99,30 @@ _zf_flowseal_ver_file() { printf '%s/.flowseal-version\n' "$ZF_ZAPRET_BASE"; }
 _zf_nfqws_version() { "$ZF_NFQWS" --version 2>&1 | head -1; }
 
 _zf_json_escape() {
-    local value="$1"
-    value=${value//\\/\\\\}
-    value=${value//\"/\\\"}
-    value=${value//$'\n'/\\n}
-    printf '%s' "$value"
+    local value="$1" out="" char escaped code i
+    local LC_ALL=C
+    for ((i = 0; i < ${#value}; i++)); do
+        char=${value:i:1}
+        case "$char" in
+            '"') escaped='\"' ;;
+            \\) escaped='\\' ;;
+            $'\b') escaped='\b' ;;
+            $'\f') escaped='\f' ;;
+            $'\n') escaped='\n' ;;
+            $'\r') escaped='\r' ;;
+            $'\t') escaped='\t' ;;
+            *)
+                printf -v code '%d' "'$char"
+                if (( code < 32 )); then
+                    printf -v escaped '\\u%04x' "$code"
+                else
+                    escaped=$char
+                fi
+                ;;
+        esac
+        out+=$escaped
+    done
+    printf '%s' "$out"
 }
 
 _zf_github_latest_tag() {
@@ -115,41 +144,83 @@ _zf_detect_arch() {
 
 # --- Проверка обновлений (фоновая, без systemd) ------------------------------
 # При запуске CLI/TUI проверяет наличие новых версий Flowseal и zapret.
-# Результат кэшируется в /tmp на 1 час. Проверка идёт в фоне — не блокирует.
-_ZF_UPDATE_CACHE="/tmp/zapret-sonar-update-check"
+# Результат кэшируется на 1 час в приватном пользовательском каталоге.
+_ZF_UPDATE_CACHE_DIR="${ZF_UPDATE_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/zapret-sonar}"
+_ZF_UPDATE_CACHE="$_ZF_UPDATE_CACHE_DIR/update-check"
+_ZF_UPDATE_LOCK="$_ZF_UPDATE_CACHE_DIR/update-check.lock"
+
+_zf_prepare_update_cache() {
+    [[ ! -L "$_ZF_UPDATE_CACHE_DIR" ]] || return 1
+    mkdir -p "$_ZF_UPDATE_CACHE_DIR" 2>/dev/null || return 1
+    chmod 700 "$_ZF_UPDATE_CACHE_DIR" 2>/dev/null || return 1
+    [[ "$(stat -c %u "$_ZF_UPDATE_CACHE_DIR" 2>/dev/null)" == "$EUID" ]]
+}
+
+_zf_invalidate_update_cache() {
+    _zf_prepare_update_cache || return 0
+    rm -f "$_ZF_UPDATE_CACHE"
+}
+
+_zf_spawn_update_check() {
+    nohup env \
+        ZF_LIBRARY_MODE=0 \
+        ZF_UPDATE_CACHE_DIR="$_ZF_UPDATE_CACHE_DIR" \
+        ZF_ZAPRET_BASE="$ZF_ZAPRET_BASE" \
+        ZF_NFQWS="$ZF_NFQWS" \
+        "$ZF_SELF" _update_check_worker </dev/null >/dev/null 2>&1 8>&- 9>&- &
+}
 
 _zf_do_update_check() {
-    local fs_local="" fs_remote="" zap_local="" zap_remote=""
-    local now; now=$(date +%s)
+    _zf_prepare_update_cache || return 1
+    [[ ! -L "$_ZF_UPDATE_LOCK" ]] || return 1
+    exec 8>"$_ZF_UPDATE_LOCK" || return 1
+    flock -n 8 || return 0
+
+    local fs_local="" fs_remote="" zap_local="" zap_remote="" state="ok"
+    local fs_result zap_result fs_pid zap_pid
+    fs_result=$(mktemp "$_ZF_UPDATE_CACHE_DIR/flowseal.XXXXXX") || return 1
+    zap_result=$(mktemp "$_ZF_UPDATE_CACHE_DIR/zapret.XXXXXX") || { rm -f "$fs_result"; return 1; }
 
     [[ -f "$(_zf_flowseal_ver_file)" ]] && fs_local=$(tr -d '[:space:]' < "$(_zf_flowseal_ver_file)" 2>/dev/null)
     fs_local="${fs_local#v}"
-    fs_remote=$(_zf_github_latest_tag "Flowseal/zapret-discord-youtube" 2>/dev/null | tr -d '[:space:]')
+    ( _zf_github_latest_tag "Flowseal/zapret-discord-youtube" > "$fs_result" ) & fs_pid=$!
+    ( _zf_github_latest_tag "bol-van/zapret" > "$zap_result" ) & zap_pid=$!
+    wait "$fs_pid" || state="error"
+    wait "$zap_pid" || state="error"
+    fs_remote=$(tr -d '[:space:]' < "$fs_result" 2>/dev/null)
+    zap_remote=$(tr -d '[:space:]' < "$zap_result" 2>/dev/null)
+    rm -f "$fs_result" "$zap_result"
     fs_remote="${fs_remote#v}"
 
     zap_local=$(_zf_nfqws_version 2>/dev/null | grep -oE 'v[0-9]+\.[0-9]+' | head -1)
-    zap_remote=$(_zf_github_latest_tag "bol-van/zapret" 2>/dev/null | tr -d '[:space:]')
+    [[ -n "$fs_remote" && -n "$zap_remote" ]] || state="error"
 
-    local tmp; tmp=$(mktemp 2>/dev/null) || return 1
+    local now tmp; now=$(date +%s)
+    tmp=$(mktemp "$_ZF_UPDATE_CACHE_DIR/update-check.XXXXXX") || return 1
     {
+        printf 'check_state=%s\n' "$state"
         printf 'flowseal_local=%s\n' "$fs_local"
         printf 'flowseal_remote=%s\n' "$fs_remote"
         printf 'zapret_local=%s\n' "$zap_local"
         printf 'zapret_remote=%s\n' "$zap_remote"
         printf 'last_check=%s\n' "$now"
     } > "$tmp"
-    mv -f "$tmp" "$_ZF_UPDATE_CACHE" 2>/dev/null
+    chmod 600 "$tmp" && mv -f "$tmp" "$_ZF_UPDATE_CACHE" || { rm -f "$tmp"; return 1; }
 }
 
 _zf_update_check() {
+    _zf_prepare_update_cache || return 1
     local now; now=$(date +%s)
-    local cached="" last_check=0
-    [[ -f "$_ZF_UPDATE_CACHE" ]] && cached=$(cat "$_ZF_UPDATE_CACHE" 2>/dev/null)
+    local cached="" last_check=0 state=""
+    [[ -f "$_ZF_UPDATE_CACHE" && ! -L "$_ZF_UPDATE_CACHE" ]] && cached=$(cat "$_ZF_UPDATE_CACHE" 2>/dev/null)
     [[ -n "$cached" ]] && last_check=$(printf '%s' "$cached" | grep '^last_check=' | cut -d= -f2)
-    last_check="${last_check:-0}"
+    [[ "$last_check" =~ ^[0-9]+$ ]] || last_check=0
+    [[ -n "$cached" ]] && state=$(printf '%s' "$cached" | grep '^check_state=' | cut -d= -f2)
+    local ttl=3600
+    [[ "$state" == "error" ]] && ttl=300
 
-    if (( now - last_check > 3600 )); then
-        ( _zf_do_update_check & ) 2>/dev/null
+    if (( now - last_check > ttl )); then
+        _zf_spawn_update_check
     fi
     printf '%s' "$cached"
 }
@@ -158,10 +229,14 @@ _zf_update_status() {
     local cached; cached=$(_zf_update_check 2>/dev/null)
     [[ -z "$cached" ]] && { printf 'проверка…'; return 0; }
 
-    local fs_local fs_remote zap_local zap_remote
-    fs_local=$(printf '%s' "$cached" | grep '^flowseal_local=' | cut -d= -f2)
+    local state fs_local fs_remote zap_local zap_remote
+    state=$(printf '%s' "$cached" | grep '^check_state=' | cut -d= -f2)
+    [[ "$state" == "error" ]] && { printf 'проверка недоступна'; return 0; }
+    fs_local=""
+    [[ -f "$(_zf_flowseal_ver_file)" ]] && fs_local=$(tr -d '[:space:]' < "$(_zf_flowseal_ver_file)" 2>/dev/null)
+    fs_local="${fs_local#v}"
     fs_remote=$(printf '%s' "$cached" | grep '^flowseal_remote=' | cut -d= -f2)
-    zap_local=$(printf '%s' "$cached" | grep '^zapret_local=' | cut -d= -f2)
+    zap_local=$(_zf_nfqws_version 2>/dev/null | grep -oE 'v[0-9]+\.[0-9]+' | head -1)
     zap_remote=$(printf '%s' "$cached" | grep '^zapret_remote=' | cut -d= -f2)
 
     local out=""
@@ -180,10 +255,20 @@ _zf_update_status() {
     fi
 }
 
+_zf_update_status_wait() {
+    local status i
+    for ((i = 0; i < 80; i++)); do
+        status=$(_zf_update_status 2>/dev/null)
+        [[ "$status" != "проверка…" ]] && { printf '%s' "$status"; return 0; }
+        sleep 0.25
+    done
+    printf 'проверка недоступна'
+}
+
 _zf_update_notify() {
     local status; status=$(_zf_update_status 2>/dev/null)
     case "$status" in
-        актуально|проверка…) return 0 ;;
+        актуально|проверка…|"проверка недоступна") return 0 ;;
         *) printf '\n⚠ Доступно обновление: %s\n  sudo sonar update — стратегии\n  sudo sonar upgrade — движок\n' "$status" ;;
     esac
 }
@@ -224,22 +309,30 @@ cmd_use() {
     zf_verify "$ZF_NFQWS" || die "nfqws отверг аргументы стратегии, конфиг не изменён"
 
     if need_root; then
-        zf_write_config "$name" "$gf" "$ipset" || die "не удалось записать конфиг"
-        systemctl restart "$ZF_SERVICE" || die "сервис не перезапустился"
+        cmd_apply "$name" "$gf" "$ipset" || exit 1
     else
         sudo -- "$0" _apply "$name" "$gf" "$ipset" || exit 1
     fi
     printf 'применена: %s (gamefilter=%s ipset=%s)\n' "$name" "$gf" "$ipset"
 }
 
+# Внутренняя команда для переустановки: пересобирает конфиг без изменения
+# состояния сервиса. Обычное применение выполняет restart после неё.
+cmd_render() {
+    local name="$1" gf="$2" ipset="$3"
+    [[ $EUID -eq 0 ]] || { printf 'ошибка: _render требует root\n' >&2; return 1; }
+    _zf_lock
+    zf_translate "$ZF_STRATEGIES_DIR/$name" "$ZF_BIN_DIR" "$ZF_LISTS_DIR" "$gf" || return 1
+    zf_verify "$ZF_NFQWS" || { printf 'ошибка: nfqws отверг аргументы\n' >&2; return 1; }
+    zf_write_config "$name" "$gf" "$ipset" || { printf 'ошибка: не удалось записать конфиг\n' >&2; return 1; }
+}
+
 # Внутренняя команда: выполняется уже от root после sudo из cmd_use.
 cmd_apply() {
     local name="$1" gf="$2" ipset="$3"
     [[ $EUID -eq 0 ]] || die "_apply требует root"
-    zf_translate "$ZF_STRATEGIES_DIR/$name" "$ZF_BIN_DIR" "$ZF_LISTS_DIR" "$gf" || exit 1
-    zf_verify "$ZF_NFQWS" || die "nfqws отверг аргументы"
-    zf_write_config "$name" "$gf" "$ipset" || die "не удалось записать конфиг"
-    systemctl restart "$ZF_SERVICE" || die "сервис не перезапустился"
+    cmd_render "$name" "$gf" "$ipset" || return 1
+    systemctl restart "$ZF_SERVICE" || { printf 'ошибка: сервис не перезапустился\n' >&2; return 1; }
 }
 
 cmd_status_json() {
@@ -287,12 +380,10 @@ cmd_status() {
 cmd_check() {
     if [[ "${1:-}" == "--json" ]]; then
         local rc
-        zf_health_check >/dev/null 2>&1; rc=$?
-        if (( rc == 0 )); then
-            printf '{"ok":true,"summary":"health-check passed"}\n'
-        else
-            printf '{"ok":false,"summary":"health-check failed"}\n'
-        fi
+        zf_health_check >/dev/null; rc=$?
+        printf '{"ok":%s,"passed":%d,"failed":%d,"skipped":%d,"scope":"http-content"}\n' \
+            "$([[ $rc -eq 0 ]] && printf true || printf false)" \
+            "$ZF_HEALTH_PASSED" "$ZF_HEALTH_FAILED" "$ZF_HEALTH_SKIPPED"
         return "$rc"
     fi
     zf_health_check
@@ -513,9 +604,31 @@ cmd_try() {
     (( ${#worked[@]} > 0 ))
 }
 cmd_baseline() {
-    local st; st=$(systemctl is-active "$ZF_SERVICE" 2>/dev/null)
-    [[ "$st" == "active" ]] && printf 'Внимание: сервис активен, замер покажет работу обхода, а не базу.\n\n'
-    zf_baseline
+    local st; st=$(systemctl is-active "$ZF_SERVICE" 2>/dev/null || true)
+    if [[ "$st" == "active" && $EUID -ne 0 ]]; then
+        sudo -- "$0" _baseline
+        return $?
+    fi
+    if [[ "$st" != "active" ]]; then
+        zf_baseline
+        return $?
+    fi
+
+    _zf_lock
+    printf 'Сервис активен: останавливаю его на время замера базовой линии.\n\n'
+    systemctl stop "$ZF_SERVICE" || die "не удалось остановить сервис для baseline"
+    _zf_baseline_interrupted() {
+        systemctl start "$ZF_SERVICE" >/dev/null 2>&1 || true
+        exit 130
+    }
+    trap _zf_baseline_interrupted INT TERM HUP
+    local rc=0 restart_rc=0
+    zf_baseline || rc=$?
+    systemctl start "$ZF_SERVICE" || restart_rc=$?
+    trap - INT TERM HUP
+    (( restart_rc == 0 )) || die "baseline завершён, но сервис не удалось запустить снова"
+    printf '\nСервис восстановлен.\n'
+    return "$rc"
 }
 
 cmd_gamefilter() {
@@ -542,7 +655,7 @@ cmd_ipset() {
         *) die "режим: none|any|loaded (any ломает доступ к обычным сайтам)" ;;
     esac
     if need_root; then
-        zf_set_ipset_mode "$ZF_LISTS_DIR" "$mode" || exit 1
+        cmd_ipset_set "$mode" || exit 1
     else
         sudo -- "$0" _ipset_set "$mode" || exit 1
     fi
@@ -551,6 +664,7 @@ cmd_ipset() {
 
 cmd_ipset_set() {
     [[ $EUID -eq 0 ]] || die "_ipset_set требует root"
+    _zf_lock
     zf_set_ipset_mode "$ZF_LISTS_DIR" "$1"
 }
 
@@ -576,14 +690,11 @@ cmd_site() {
             if ! tr -d '\r' < "$f" 2>/dev/null | grep -qxF "$target"; then
                 printf 'не найден в списке: %s\n' "$target"; return 0
             fi
-            local tmp; tmp=$(mktemp) || die "не удалось создать временный файл"
-            tr -d '\r' < "$f" | grep -vxF "$target" > "$tmp"
-            if [[ -w "$f" ]]; then
-                cat "$tmp" > "$f"
+            if [[ $EUID -eq 0 ]]; then
+                cmd_site_mutate remove "$target"
             else
-                sudo tee "$f" < "$tmp" >/dev/null || { rm -f "$tmp"; die "не удалось записать"; }
+                sudo -- "$0" _site_remove "$target" || exit 1
             fi
-            rm -f "$tmp"
             printf 'удалён: %s (перезапустите: zapret-sonar restart)\n' "$target"
             return 0 ;;
     esac
@@ -596,12 +707,31 @@ cmd_site() {
     if tr -d '\r' < "$f" 2>/dev/null | grep -qxF "$domain"; then
         printf 'уже в списке: %s\n' "$domain"; return 0
     fi
-    if [[ -w "$f" ]]; then
-        printf '%s\n' "$domain" >> "$f"
+    if [[ $EUID -eq 0 ]]; then
+        cmd_site_mutate add "$domain"
     else
-        printf '%s\n' "$domain" | sudo tee -a "$f" >/dev/null || exit 1
+        sudo -- "$0" _site_add "$domain" || exit 1
     fi
     printf 'добавлен: %s (перезапустите: zapret-sonar restart)\n' "$domain"
+}
+
+cmd_site_mutate() {
+    local action="$1" domain="$2" f="$ZF_LISTS_DIR/list-general-user.txt" tmp
+    [[ $EUID -eq 0 ]] || die "изменение списка требует root"
+    _zf_lock
+    case "$action" in
+        add)
+            printf '%s\n' "$domain" >> "$f" || die "не удалось записать $f"
+            ;;
+        remove)
+            tmp=$(mktemp "$ZF_LISTS_DIR/list-general-user.XXXXXX") || die "не удалось создать временный файл"
+            tr -d '\r' < "$f" | grep -vxF "$domain" > "$tmp" || true
+            chmod --reference="$f" "$tmp" 2>/dev/null || chmod 644 "$tmp"
+            chown --reference="$f" "$tmp" 2>/dev/null || true
+            mv -f "$tmp" "$f" || { rm -f "$tmp"; die "не удалось записать $f"; }
+            ;;
+        *) die "неизвестная операция со списком: $action" ;;
+    esac
 }
 
 # --- Обновление Flowseal (стратегии, списки, .bin) ---------------------------
@@ -614,18 +744,21 @@ cmd_update() {
     [[ "${1:-}" == "--force" ]] && force=1
 
     if ! need_root; then
+        local rc
         if (( force )); then
-            sudo -- "$0" _update --force
+            sudo -- "$0" _update --force; rc=$?
         else
-            sudo -- "$0" _update
+            sudo -- "$0" _update; rc=$?
         fi
-        return $?
+        (( rc == 0 )) && _zf_invalidate_update_cache
+        return "$rc"
     fi
 
     _zf_lock
 
-    local cur=""
+    local cur="" old_version=""
     [[ -f "$(_zf_flowseal_ver_file)" ]] && cur=$(tr -d '[:space:]' < "$(_zf_flowseal_ver_file)" 2>/dev/null)
+    old_version="$cur"
     cur="${cur#v}"
     printf 'Flowseal: установлена %s\n' "${cur:-неизвестно}"
 
@@ -680,41 +813,66 @@ cmd_update() {
         || die "не удалось подготовить новый набор Flowseal"
     local current="$ZF_ZAPRET_BASE/flowseal-current" old_target=""
     [[ -L "$current" ]] && old_target=$(readlink "$current")
+    local update_pending=0 update_committed=0 cur_strat="" gf="off" ips="none"
+    _zf_update_rollback() {
+        local signal="${1:-}"
+        if (( update_pending && ! update_committed )); then
+            if [[ -n "$old_target" ]] && zf_restore_flowseal_tree "$current" "$old_target"; then
+                ZF_STRATEGIES_DIR="$current/strategies"
+                ZF_BIN_DIR="$current/bin"
+                ZF_LISTS_DIR="$current/lists"
+                [[ -n "$cur_strat" ]] && cmd_apply "$cur_strat" "$gf" "$ips" >/dev/null 2>&1 || true
+            fi
+            [[ -d "$release" ]] && zf_remove_flowseal_release "$ZF_ZAPRET_BASE/.flowseal-releases" "$release" >/dev/null 2>&1 || true
+            [[ -n "$old_version" ]] && printf '%s\n' "$old_version" > "$(_zf_flowseal_ver_file)"
+        fi
+        [[ -n "$signal" ]] && exit 130
+    }
+    trap '_zf_update_rollback INT' INT TERM HUP
+    update_pending=1
     zf_activate_flowseal_tree "$stage" "$release" "$current" \
         || die "не удалось атомарно активировать новый набор Flowseal"
-    # Snapshots: держим два последних — текущий и предыдущий для отката.
-    local old_rel
-    while IFS= read -r old_rel; do
-        [[ -z "$old_rel" ]] && continue
-        rm -rf "$ZF_ZAPRET_BASE/.flowseal-releases/$old_rel"
-    done < <(ls -1dt "$ZF_ZAPRET_BASE/.flowseal-releases"/*/ 2>/dev/null | sed 's|.*/\([^/]*\)/$|\1|' | tail -n +3)
     ZF_STRATEGIES_DIR="$ZF_ZAPRET_BASE/flowseal-current/strategies"
     ZF_BIN_DIR="$ZF_ZAPRET_BASE/flowseal-current/bin"
     ZF_LISTS_DIR="$ZF_ZAPRET_BASE/flowseal-current/lists"
     chown -R root:root "$release"
-    printf '%s\n' "${latest:-main}" > "$(_zf_flowseal_ver_file)"
     printf '  • стратегии, .bin и списки переключены одним набором\n'
 
-    # 5. Пересобрать конфиг активной стратегии
-    local cur_strat; cur_strat=$(zf_state strategy)
-    if [[ -n "$cur_strat" && -f "$ZF_STRATEGIES_DIR/$cur_strat" ]]; then
-        printf 'Пересборка конфига (%s)...\n' "$cur_strat"
-        local gf ips
+    # Конфиг и сервис проверяются до фиксации версии и удаления snapshots.
+    cur_strat=$(zf_state strategy)
+    if [[ -n "$cur_strat" ]]; then
         gf=$(zf_state gamefilter); gf="${gf:-off}"
         ips=$(zf_ipset_mode "$ZF_LISTS_DIR")
-        if ! cmd_apply "$cur_strat" "$gf" "$ips"; then
-            if [[ -n "$old_target" ]]; then
-                local restore_link="${current}.restore.$$"
-                if ln -s "$old_target" "$restore_link" && mv -Tf "$restore_link" "$current"; then
-                    ZF_STRATEGIES_DIR="$current/strategies"
-                    ZF_BIN_DIR="$current/bin"
-                    ZF_LISTS_DIR="$current/lists"
-                    cmd_apply "$cur_strat" "$gf" "$ips" >/dev/null 2>&1 || true
-                fi
+        printf 'Пересборка конфига (%s)...\n' "$cur_strat"
+        if [[ ! -f "$ZF_STRATEGIES_DIR/$cur_strat" ]] || ! cmd_apply "$cur_strat" "$gf" "$ips"; then
+            if [[ -z "$old_target" ]] || ! zf_restore_flowseal_tree "$current" "$old_target"; then
+                die "обновление не применилось, автоматический откат набора Flowseal не удался"
             fi
+            ZF_STRATEGIES_DIR="$current/strategies"
+            ZF_BIN_DIR="$current/bin"
+            ZF_LISTS_DIR="$current/lists"
+            if ! cmd_apply "$cur_strat" "$gf" "$ips" >/dev/null 2>&1; then
+                die "старый набор Flowseal возвращён, но рабочий конфиг/сервис восстановить не удалось"
+            fi
+            zf_remove_flowseal_release "$ZF_ZAPRET_BASE/.flowseal-releases" "$release" \
+                || die "старый набор восстановлен, но не удалось удалить нерабочий snapshot"
+            [[ -n "$old_version" ]] && printf '%s\n' "$old_version" > "$(_zf_flowseal_ver_file)"
             die "не удалось применить активную стратегию, старый набор Flowseal восстановлен"
         fi
     fi
+
+    local version_tmp
+    version_tmp=$(mktemp "$ZF_ZAPRET_BASE/.flowseal-version.XXXXXX") || die "не удалось записать версию Flowseal"
+    printf '%s\n' "${latest:-main}" > "$version_tmp"
+    chmod 644 "$version_tmp" && mv -f "$version_tmp" "$(_zf_flowseal_ver_file)" \
+        || { rm -f "$version_tmp"; _zf_update_rollback; die "не удалось зафиксировать версию Flowseal"; }
+    update_committed=1
+    trap - INT TERM HUP
+
+    # Только подтверждённый новый набор и предыдущий рабочий остаются на диске.
+    zf_prune_flowseal_releases "$ZF_ZAPRET_BASE/.flowseal-releases" "$release" "$old_target" \
+        || die "обновление применено, но не удалось очистить старые snapshots"
+    _zf_invalidate_update_cache
 
     printf '\nОбновление Flowseal завершено'
     [[ -n "$latest" ]] && printf ' (версия %s)' "$latest"
@@ -750,8 +908,10 @@ cmd_upgrade() {
     fi
 
     if ! need_root; then
-        sudo -- "$0" _upgrade "$latest"
-        return $?
+        local rc
+        sudo -- "$0" _upgrade "$latest"; rc=$?
+        (( rc == 0 )) && _zf_invalidate_update_cache
+        return "$rc"
     fi
 
     cmd_do_upgrade "$latest"
@@ -761,6 +921,7 @@ cmd_upgrade() {
 cmd_do_upgrade() {
     local latest="$1" arch tmp_dir url sums
     [[ $EUID -eq 0 ]] || die "_upgrade требует root"
+    _zf_lock
     arch=$(_zf_detect_arch)
 
     tmp_dir=$(mktemp -d) || die "не удалось создать временную директорию"
@@ -799,38 +960,57 @@ cmd_do_upgrade() {
 
     local nfqws_bin="$root/binaries/$arch/nfqws"
 
+    _zf_restore_engine() {
+        local restore_ok=1
+        install -Dm755 "$bak_dir/nfqws.old" "$ZF_NFQWS" || restore_ok=0
+        install -Dm755 "$bak_dir/ip2net.old" "$ZF_ZAPRET_BASE/ip2net/ip2net" || restore_ok=0
+        install -Dm755 "$bak_dir/mdig.old" "$ZF_ZAPRET_BASE/mdig/mdig" || restore_ok=0
+        systemctl start "$ZF_SERVICE" 2>/dev/null || restore_ok=0
+        (( restore_ok ))
+    }
+
     printf 'Обновление бинарников в %s...\n' "$ZF_ZAPRET_BASE"
     local old_ver; old_ver=$(_zf_nfqws_version)
-    printf '  останавливаю сервис...\n'
-    systemctl stop "$ZF_SERVICE" 2>/dev/null
 
     # Бэкап старых бинарников: если новый не запустится — можно откатить.
     local bak_dir="$ZF_ZAPRET_BASE/.bak"
-    mkdir -p "$bak_dir"
-    [[ -f "$ZF_NFQWS" ]] && cp -a "$ZF_NFQWS" "$bak_dir/nfqws.old" 2>/dev/null
-    [[ -f "$ZF_ZAPRET_BASE/ip2net/ip2net" ]] && cp -a "$ZF_ZAPRET_BASE/ip2net/ip2net" "$bak_dir/ip2net.old" 2>/dev/null
-    [[ -f "$ZF_ZAPRET_BASE/mdig/mdig" ]] && cp -a "$ZF_ZAPRET_BASE/mdig/mdig" "$bak_dir/mdig.old" 2>/dev/null
+    mkdir -p "$bak_dir" || die "не удалось создать каталог отката"
+    cp -a "$ZF_NFQWS" "$bak_dir/nfqws.old" || die "не удалось сохранить nfqws для отката"
+    cp -a "$ZF_ZAPRET_BASE/ip2net/ip2net" "$bak_dir/ip2net.old" || die "не удалось сохранить ip2net для отката"
+    cp -a "$ZF_ZAPRET_BASE/mdig/mdig" "$bak_dir/mdig.old" || die "не удалось сохранить mdig для отката"
 
-    install -Dm755 "$nfqws_bin" "$ZF_NFQWS"
-    install -Dm755 "$root/binaries/$arch/ip2net" "$ZF_ZAPRET_BASE/ip2net/ip2net"
-    install -Dm755 "$root/binaries/$arch/mdig"   "$ZF_ZAPRET_BASE/mdig/mdig"
+    printf '  останавливаю сервис...\n'
+    systemctl stop "$ZF_SERVICE" 2>/dev/null || die "не удалось остановить сервис"
+    _zf_upgrade_interrupted() {
+        trap - INT TERM HUP
+        _zf_restore_engine >/dev/null 2>&1 || true
+        exit 130
+    }
+    trap _zf_upgrade_interrupted INT TERM HUP
+
+    if ! install -Dm755 "$nfqws_bin" "$ZF_NFQWS" \
+        || ! install -Dm755 "$root/binaries/$arch/ip2net" "$ZF_ZAPRET_BASE/ip2net/ip2net" \
+        || ! install -Dm755 "$root/binaries/$arch/mdig" "$ZF_ZAPRET_BASE/mdig/mdig"; then
+        _zf_restore_engine || die "не удалось установить новые бинарники, откат также завершился ошибкой"
+        die "не удалось установить новые бинарники; старые бинарники и сервис восстановлены"
+    fi
 
     printf '  запускаю сервис...\n'
     if ! systemctl start "$ZF_SERVICE" 2>/dev/null; then
         printf '  сервис не поднялся — откат к старым бинарникам\n'
-        [[ -f "$bak_dir/nfqws.old" ]] && install -Dm755 "$bak_dir/nfqws.old" "$ZF_NFQWS"
-        [[ -f "$bak_dir/ip2net.old" ]] && install -Dm755 "$bak_dir/ip2net.old" "$ZF_ZAPRET_BASE/ip2net/ip2net"
-        [[ -f "$bak_dir/mdig.old" ]] && install -Dm755 "$bak_dir/mdig.old" "$ZF_ZAPRET_BASE/mdig/mdig"
-        systemctl start "$ZF_SERVICE" 2>/dev/null
-        die "сервис не поднялся с новым nfqws — откат выполнен, старые бинарники восстановлены"
+        _zf_restore_engine || die "сервис не поднялся с новым nfqws, откат также завершился ошибкой"
+        die "сервис не поднялся с новым nfqws; старые бинарники и сервис восстановлены"
     fi
+    trap - INT TERM HUP
 
+    _zf_invalidate_update_cache
     printf '\nzapret обновлён: %s -> %s\n' "$old_ver" "$(_zf_nfqws_version)"
 }
 
 # --- Удаление ----------------------------------------------------------------
 cmd_uninstall() {
     [[ $EUID -eq 0 ]] || die "uninstall требует root (sudo $0 uninstall)"
+    _zf_lock
 
     printf 'Удаление zapret-sonar...\n\n'
     printf 'Будет удалено:\n'
@@ -901,7 +1081,12 @@ cmd_uninstall() {
 
 cmd_service() {
     local action="$1"
-    if need_root; then systemctl "$action" "$ZF_SERVICE"; else sudo systemctl "$action" "$ZF_SERVICE"; fi
+    if ! need_root; then
+        sudo -- "$0" _service "$action"
+        return $?
+    fi
+    _zf_lock
+    systemctl "$action" "$ZF_SERVICE"
 }
 
 cmd_log() {
@@ -918,7 +1103,7 @@ cmd_help() {
         list)      printf 'Список стратегий Flowseal (* — применённая).\n' ;;
         use)       printf 'Применить стратегию. Можно частью имени: sonar use alt12\n' ;;
         status)    printf 'Состояние сервиса, стратегии, версии zapret/Flowseal, окружение.\n' ;;
-        check)     printf 'Проверить, работает ли обход (HTTP-проверка заблокированных ресурсов).\n' ;;
+        check)     printf 'Проверить доступность заданных HTTP/CDN-целей. Не проверяет UDP/QUIC.\n' ;;
         try)       printf 'Перебрать все стратегии, показать рабочие.\n  --keep — оставить первую заработавшую\n' ;;
         baseline)  printf 'Что заблокировано БЕЗ обхода (сервис останавливается на время замера).\n' ;;
         update)    printf 'Обновить стратегии, списки и .bin из GitHub Flowseal.\n  --force — обновить даже если версия та же\n' ;;
@@ -941,10 +1126,10 @@ zapret-sonar — стратегии Flowseal поверх zapret v1
   list                  список стратегий (* — применённая)
   use <стратегия>       применить (можно частью имени: use alt12)
   status                состояние сервиса, стратегии, версии, окружения
-  check                 работает ли обход сейчас
+  check                 доступность заданных HTTP/CDN-целей
   try [--keep]          перебрать все стратегии, показать рабочие
                          (--keep — оставить первую заработавшую)
-  baseline              что заблокировано БЕЗ обхода (сервис выключить)
+  baseline              что заблокировано БЕЗ обхода (сервис временно выключается)
   update [--force]      обновить стратегии, списки и .bin из GitHub Flowseal
   upgrade [--force]     обновить движок zapret (nfqws, ip2net, mdig)
   uninstall             полностью удалить zapret-sonar (сервис, файлы, юнит)
@@ -965,6 +1150,10 @@ zapret-sonar — стратегии Flowseal поверх zapret v1
 EOF
 }
 
+if [[ "${ZF_LIBRARY_MODE:-0}" == "1" ]]; then
+    return 0 2>/dev/null || exit 0
+fi
+
 # --debug: убираем из аргументов, включаем трейс
 ZF_DEBUG=0
 _zf_debug_args=()
@@ -977,6 +1166,7 @@ done
 set -- "${_zf_debug_args[@]}"
 unset _zf_a _zf_debug_args
 (( ZF_DEBUG )) && set -x
+ZF_CMD="${1:-}"
 
 # --help для подкоманд: sonar try --help → справка по try
 if [[ "${2:-}" == "--help" || "${2:-}" == "-h" ]]; then
@@ -1004,13 +1194,20 @@ case "${1:-}" in
     doctor)     shift; cmd_doctor "$@" ;;
     help)       shift; cmd_help "$@" ;;
     _apply)     shift; cmd_apply "$@" ;;
+    _render)    shift; cmd_render "$@" ;;
     _update)    shift; cmd_update "$@" ;;
     _upgrade)   shift; cmd_do_upgrade "$@" ;;
     _ipset_set) shift; cmd_ipset_set "$@" ;;
+    _site_add)  shift; cmd_site_mutate add "$@" ;;
+    _site_remove) shift; cmd_site_mutate remove "$@" ;;
+    _service)   shift; cmd_service "$@" ;;
+    _baseline)  shift; cmd_baseline "$@" ;;
     _state)     shift; cmd_state "$@" ;;
     _describe)  shift; cmd_describe "$@" ;;
     _list)      shift; zf_list_strategies ;;
     _update_status) _zf_update_status ;;
+    _update_status_wait) _zf_update_status_wait ;;
+    _update_check_worker) _zf_do_update_check ;;
     ''|-h|--help) usage ;;
     -v|--version) printf 'zapret-sonar %s\n' "$ZF_VERSION" ;;
     *) die "неизвестная команда: $1 (--help)" ;;
@@ -1018,8 +1215,8 @@ esac
 
 # Уведомление об обновлениях — только в интерактивном терминале
 if [[ -t 1 && "${ZF_DEBUG:-0}" == "0" ]]; then
-    case "${1:-}" in
-        -v|--version|''|-h|--help) ;;
+    case "$ZF_CMD" in
+        _*|-v|--version|''|-h|--help) ;;
         *) _zf_update_notify 2>/dev/null ;;
     esac
 fi

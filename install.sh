@@ -36,12 +36,82 @@ source "$SRC_DIR/lib/flowseal.sh"
 # stdout функций: иначе прогресс-вывод попал бы в захватываемое значение.
 FETCHED_ZAPRET=""
 FETCHED_FLOWSEAL=""
+INSTALL_FLOWSEAL_RELEASE=""
+INSTALL_FLOWSEAL_OLD_TARGET=""
+INSTALL_LEGACY_FLOWSEAL=0
+INSTALL_CAN_REMOVE_LEGACY=0
+INSTALL_STARTED=0
+INSTALL_COMMITTED=0
+INSTALL_HAD_BASE=0
+INSTALL_SERVICE_ACTIVE=0
+INSTALL_UNIT="/etc/systemd/system/$SERVICE_NAME.service"
+INSTALL_LINKS=(zapret-sonar sonar zapret-sonar-tui sonar-tui)
 
 log()  { printf '\n>>> %s\n' "$*"; }
 info() { printf '    %s\n' "$*"; }
 die()  { printf '\nошибка: %s\n' "$*" >&2; exit 1; }
 
-cleanup() { [[ -n "$STAGING" && -d "$STAGING" ]] && rm -rf "$STAGING"; }
+acquire_install_lock() {
+    local runtime_dir="${ZF_RUNTIME_DIR:-/run/zapret-sonar}"
+    local lock="$runtime_dir/operations.lock"
+    [[ ! -L "$runtime_dir" ]] || die "небезопасный runtime-каталог: $runtime_dir"
+    install -d -m 0755 "$runtime_dir" || die "не удалось создать $runtime_dir"
+    [[ "$(stat -c %u "$runtime_dir" 2>/dev/null)" == "$EUID" ]] || die "неверный владелец $runtime_dir"
+    [[ ! -L "$lock" ]] || die "lock-файл не должен быть симлинком: $lock"
+    exec 9>"$lock"
+    flock -n 9 || die "другая операция zapret-sonar уже выполняется"
+}
+
+backup_current_install() {
+    mkdir -p "$STAGING/rollback"
+    [[ ! -L "$ZAPRET_BASE" ]] || die "$ZAPRET_BASE не должен быть симлинком"
+    if [[ -d "$ZAPRET_BASE" ]]; then
+        cp -a "$ZAPRET_BASE" "$STAGING/rollback/zapret" || die "не удалось создать резервную копию текущей установки"
+        INSTALL_HAD_BASE=1
+    fi
+    mkdir -p "$STAGING/rollback/bin"
+    local name
+    for name in "${INSTALL_LINKS[@]}"; do
+        if [[ -e "$BIN_DEST/$name" || -L "$BIN_DEST/$name" ]]; then
+            cp -a "$BIN_DEST/$name" "$STAGING/rollback/bin/$name" || die "не удалось сохранить $BIN_DEST/$name"
+        fi
+    done
+    [[ ! -L "$INSTALL_UNIT" ]] || die "$INSTALL_UNIT не должен быть симлинком"
+    [[ -f "$INSTALL_UNIT" ]] && cp -a "$INSTALL_UNIT" "$STAGING/rollback/service.unit"
+    [[ "$(systemctl is-active "$SERVICE_NAME" 2>/dev/null || true)" == "active" ]] && INSTALL_SERVICE_ACTIVE=1
+    INSTALL_STARTED=1
+}
+
+rollback_install() {
+    (( INSTALL_STARTED && ! INSTALL_COMMITTED )) || return 0
+    printf '\nошибка установки: восстанавливаю предыдущее состояние\n' >&2
+    systemctl stop "$SERVICE_NAME" >/dev/null 2>&1 || true
+    rm -rf "$ZAPRET_BASE"
+    if (( INSTALL_HAD_BASE )); then
+        cp -a "$STAGING/rollback/zapret" "$ZAPRET_BASE" || printf 'КРИТИЧНО: не удалось восстановить %s\n' "$ZAPRET_BASE" >&2
+    fi
+    local name
+    for name in "${INSTALL_LINKS[@]}"; do
+        rm -f "$BIN_DEST/$name"
+        if [[ -e "$STAGING/rollback/bin/$name" || -L "$STAGING/rollback/bin/$name" ]]; then
+            cp -a "$STAGING/rollback/bin/$name" "$BIN_DEST/$name" || printf 'КРИТИЧНО: не удалось восстановить %s\n' "$BIN_DEST/$name" >&2
+        fi
+    done
+    if [[ -f "$STAGING/rollback/service.unit" ]]; then
+        cp -a "$STAGING/rollback/service.unit" "$INSTALL_UNIT" || printf 'КРИТИЧНО: не удалось восстановить %s\n' "$INSTALL_UNIT" >&2
+    else
+        rm -f "$INSTALL_UNIT"
+    fi
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    (( INSTALL_SERVICE_ACTIVE )) && systemctl start "$SERVICE_NAME" >/dev/null 2>&1 || true
+}
+
+cleanup() {
+    local rc=$?
+    (( rc == 0 )) || rollback_install
+    [[ -n "$STAGING" && -d "$STAGING" ]] && rm -rf "$STAGING"
+    return "$rc"
+}
 trap cleanup EXIT
 
 # --- Проверки ----------------------------------------------------------------
@@ -214,22 +284,22 @@ install_flowseal() {
 
     local current="$ZAPRET_BASE/flowseal-current"
     local old_lists="$ZAPRET_BASE/flowseal-lists"
+    local legacy=0
+    [[ -d "$ZAPRET_BASE/flowseal-strategies" || -d "$ZAPRET_BASE/flowseal-bin" || -d "$ZAPRET_BASE/flowseal-lists" ]] && legacy=1
     [[ -d "$current/lists" ]] && old_lists="$current/lists"
     local stage="$ZAPRET_BASE/.flowseal-stage.$$"
     local release
     release="$ZAPRET_BASE/.flowseal-releases/$FLOWSEAL_VER-$(date +%s)-$$"
+    local old_target=""
+    [[ -L "$current" ]] && old_target=$(readlink "$current")
 
     rm -rf "$stage"
     zf_prepare_flowseal_tree "$src" "$stage" "$old_lists" || die "не удалось подготовить набор Flowseal"
     zf_activate_flowseal_tree "$stage" "$release" "$current" || die "не удалось активировать набор Flowseal"
-    # Старая схема каталогов (до атомарных наборов): данные перенесены,
-    # дубликаты не нужны.
-    if [[ -d "$ZAPRET_BASE/flowseal-lists" && "$old_lists" == "$ZAPRET_BASE/flowseal-lists" ]]; then
-        rm -rf "$ZAPRET_BASE/flowseal-strategies" "$ZAPRET_BASE/flowseal-bin" "$ZAPRET_BASE/flowseal-lists"
-        info "старые каталоги flowseal-* удалены (данные перенесены в атомарный набор)"
-    fi
     chown -R root:root "$release"
-    printf '%s\n' "$FLOWSEAL_VER" > "$ZAPRET_BASE/.flowseal-version"
+    INSTALL_FLOWSEAL_RELEASE="$release"
+    INSTALL_FLOWSEAL_OLD_TARGET="$old_target"
+    INSTALL_LEGACY_FLOWSEAL="$legacy"
     info "стратегий: $(find "$current/strategies" -name '*.bat' | wc -l), фейков: $(find "$current/bin" -name '*.bin' | wc -l)"
 }
 
@@ -285,6 +355,49 @@ install_unit() {
     info "юнит: /etc/systemd/system/$SERVICE_NAME.service (автозапуск не включён)"
 }
 
+rebuild_existing_config() {
+    local cli="$ZAPRET_BASE/zapret-sonar/zapret-sonar"
+    local strategy gamefilter ipset
+    if [[ ! -f "$ZAPRET_BASE/config" ]]; then
+        INSTALL_CAN_REMOVE_LEGACY=1
+        return 0
+    fi
+    strategy=$(sed -n 's/^# zapret-sonar-strategy: //p' "$ZAPRET_BASE/config" | head -1)
+    if [[ -z "$strategy" ]]; then
+        (( INSTALL_LEGACY_FLOWSEAL == 0 )) || info "старые flowseal-* сохранены: конфиг не содержит маркер стратегии"
+        return 0
+    fi
+    gamefilter=$(sed -n 's/^# zapret-sonar-gamefilter: //p' "$ZAPRET_BASE/config" | head -1)
+    ipset=$(sed -n 's/^# zapret-sonar-ipset: //p' "$ZAPRET_BASE/config" | head -1)
+    gamefilter="${gamefilter:-off}"
+    ipset="${ipset:-none}"
+
+    log "Пересборка существующего конфига"
+    if ! ZF_LOCK_HELD=1 "$cli" _render "$strategy" "$gamefilter" "$ipset"; then
+        if [[ -n "$INSTALL_FLOWSEAL_OLD_TARGET" ]]; then
+            zf_restore_flowseal_tree "$ZAPRET_BASE/flowseal-current" "$INSTALL_FLOWSEAL_OLD_TARGET" \
+                || die "не удалось пересобрать конфиг и откатить набор Flowseal"
+        else
+            rm -f "$ZAPRET_BASE/flowseal-current"
+        fi
+        zf_remove_flowseal_release "$ZAPRET_BASE/.flowseal-releases" "$INSTALL_FLOWSEAL_RELEASE" \
+            || die "набор Flowseal откатан, но не удалось удалить нерабочий snapshot"
+        die "не удалось пересобрать существующую стратегию; предыдущий набор восстановлен"
+    fi
+    INSTALL_CAN_REMOVE_LEGACY=1
+}
+
+finalize_flowseal_install() {
+    if [[ "${INSTALL_LEGACY_FLOWSEAL:-0}" == "1" && "$INSTALL_CAN_REMOVE_LEGACY" == "1" ]]; then
+        rm -rf "$ZAPRET_BASE/flowseal-strategies" "$ZAPRET_BASE/flowseal-bin" "$ZAPRET_BASE/flowseal-lists"
+        info "старые каталоги flowseal-* удалены после успешной пересборки"
+    fi
+    printf '%s\n' "$FLOWSEAL_VER" > "$ZAPRET_BASE/.flowseal-version"
+    zf_prune_flowseal_releases "$ZAPRET_BASE/.flowseal-releases" \
+        "$INSTALL_FLOWSEAL_RELEASE" "$INSTALL_FLOWSEAL_OLD_TARGET" \
+        || die "установка завершена, но не удалось очистить старые snapshots"
+}
+
 check_conflicts() {
     local other
     for other in zapret2 zapret-ng; do
@@ -301,24 +414,33 @@ check_conflicts() {
 
 main() {
     preflight
+    acquire_install_lock
     local arch; arch=$(detect_arch)
     STAGING=$(mktemp -d /tmp/zapret-sonar-install.XXXXXX)
 
     fetch_zapret "$arch"
     fetch_flowseal
+    backup_current_install
 
     install_zapret "$FETCHED_ZAPRET" "$arch"
     install_flowseal "$FETCHED_FLOWSEAL"
     install_flow
     install_unit
+    rebuild_existing_config
+    finalize_flowseal_install
     check_conflicts
+    if (( INSTALL_SERVICE_ACTIVE )); then
+        systemctl restart "$SERVICE_NAME" || die "сервис не запустился после переустановки"
+        info "активный сервис перезапущен с обновлёнными файлами"
+    fi
+    INSTALL_COMMITTED=1
 
     cat <<EOF
 
 Готово.
 
   zapret-sonar baseline          что заблокировано без обхода
-  zapret-sonar try               перебрать стратегии и найти рабочие
+  zapret-sonar try --keep        найти и оставить первую рабочую стратегию
   zapret-sonar use <стратегия>   применить
   zapret-sonar status            состояние
 
@@ -328,5 +450,9 @@ main() {
 Стратегии подбираются опытом: рабочая зависит от провайдера.
 EOF
 }
+
+if [[ "${ZF_INSTALL_LIBRARY_MODE:-0}" == "1" ]]; then
+    return 0 2>/dev/null || exit 0
+fi
 
 main "$@"

@@ -1,200 +1,194 @@
 # zapret-sonar
 
+[Русский](README.md) | [English](README.en.md)
+
 <p align="center">
   <img src=".github/social-preview.png" alt="zapret-sonar" width="640">
 </p>
 
-Linux wrapper for [zapret](https://github.com/bol-van/zapret) v1 with [Flowseal](https://github.com/Flowseal/zapret-discord-youtube) strategies. Translates Flowseal `.bat` strategies into `nfqws` arguments for Linux — no Wine, no manual conversion.
+A Linux wrapper for [zapret](https://github.com/bol-van/zapret) v1 and [Flowseal](https://github.com/Flowseal/zapret-discord-youtube) strategies. It translates Flowseal `.bat` strategies into `nfqws` arguments and manages installation, selection, checks, and updates.
 
-The project targets Linux with `systemd` and uses `nfqws` from zapret v1. It is not a VPN: results depend on the provider and the specific block.
+> zapret v1 is in EOL mode: upstream only provides bug fixes. zapret2 is not supported yet and is being investigated separately.
 
-## What it does
-
-Flowseal publishes DPI bypass strategies as Windows `.bat` files. zapret-sonar translates them into `nfqws` arguments and manages the lifecycle: installation, strategy selection, testing, sweep, updates.
-
-```bash
-sonar list              # list strategies (* = active)
-sonar use alt12         # apply strategy (partial name match)
-sonar try               # sweep all strategies, show working ones
-sonar check             # does bypass work right now
-sonar doctor            # installation and active strategy diagnostics
-sonar status            # service, strategy, versions, environment
-sonar update            # update Flowseal strategies
-sonar upgrade           # update zapret engine (nfqws)
-```
-
-## Installation
+## Quick start
 
 ```bash
 git clone https://github.com/oxygen-syndata/zapret-sonar.git
 cd zapret-sonar
 sudo ./install.sh
+sudo sonar try --keep
+sonar check
+sudo sonar enable
 ```
 
-The installer downloads zapret v1 (bol-van) and Flowseal strategies, verifies sha256 checksums of binaries, sets up the systemd unit, and installs zapret-sonar into `/opt/zapret/`.
+`try --keep` keeps the first strategy that passes the HTTP checks without detected regressions. It is not guaranteed to be the objectively best strategy for every site or protocol. `enable` enables autostart for the configured service.
 
-**Requirements:** bash 4+, curl, tar, sha256sum, systemd, nftables (or iptables), fzf (for TUI — optional).
+On servers and remote hosts, `try` temporarily stops and repeatedly restarts the service, so active connections may be interrupted.
 
-**Tested on:** CachyOS (Arch, x86_64), Ubuntu Server 26.04 LTS (x86_64). Should work on any Linux with systemd and nftables.
+## What it is and is not
 
-## How it works
+- A GNU/Linux tool built around `systemd`, `nfqws`, and nftables.
+- Not a VPN or proxy: traffic is not routed through a third-party server.
+- Not an independent strategy collection: strategies and lists come from Flowseal.
+- Results depend on the provider, blocking method, and protocol.
+- Do not install it over another zapret deployment: processes and NFQUEUE rules will conflict.
+- `sonar check` tests specific HTTP/CDN targets. Success does not prove that Discord Voice, QUIC, YouTube video, or zapret itself is working.
 
+## If it does not work
+
+```bash
+sonar doctor
+sonar status
+sonar baseline
+sonar log
 ```
-.bat Flowseal  →  translate.sh  →  NFQWS_OPT  →  config  →  systemctl restart
-                                      ↓
-                              nfqws --dry-run (validation)
-```
 
-1. **Translation** — `lib/translate.sh` parses `.bat`, extracts `nfqws` arguments, adapts paths (Windows → Linux), converts CRLF.
-2. **Sanitization** — result is checked for shell metacharacters (config is sourced as root).
-3. **Validation** — `nfqws --dry-run` parses arguments with its own parser before writing config.
-4. **Write** — config is assembled atomically (mktemp + mv), with state markers.
-5. **Restart** — `systemctl restart zapret`.
+`baseline` temporarily stops an active service, measures connectivity without bypass, and restores the previous service state.
+
+Also check:
+
+1. Secure DNS. DoT/DoH is recommended and required when your provider tampers with DNS. `sonar status` detects system-wide DoT via `systemd-resolved`, but not browser DoH.
+2. IPv6. The generated config uses `DISABLE_IPV6=1`; working IPv6 may bypass `nfqws`.
+3. Tunnels. A client-side full tunnel may route checks around local `nfqws`. A server-side WG/AWG interface intentionally forwarded through NFQUEUE is not an error by itself.
+4. If no strategy works, use `/opt/zapret/blockcheck.sh` for deeper parameter testing.
+
+## Requirements
+
+- GNU/Linux with `systemd`;
+- bash 4+, curl, tar, sha256sum, flock, iproute2, and standard GNU coreutils/findutils/grep/sed;
+- nftables (recommended) or iptables;
+- `unzip` only for the Flowseal branch fallback;
+- fzf for the optional TUI;
+- git for the installation method shown above.
+
+Tested on CachyOS (Arch, x86_64) and Ubuntu Server 26.04 LTS (x86_64). Other distributions with a compatible GNU userspace may work but are not in the tested matrix yet.
 
 ## Commands
 
-| Command | Description |
-|---------|-------------|
-| `list` | List strategies (`*` = active) |
-| `use <strategy>` | Apply (partial name: `use alt12`) |
-| `status [--json]` | Service, strategy, zapret/Flowseal versions, environment |
-| `check` | Does bypass work (HTTP check of blocked resources) |
-| `check --json` | Machine-readable health-check summary |
-| `doctor` | Combined service, config, nfqws and active strategy diagnostics |
-| `try [--keep]` | Sweep all strategies, show working ones. Regression control: a strategy that unblocks but breaks previously working sites is not considered working. `--keep` — keep first working |
-| `baseline` | What's blocked WITHOUT bypass (service stops during measurement) |
-| `update [--force]` | Update strategies, lists and `.bin` from Flowseal GitHub |
-| `upgrade [--force]` | Update zapret engine (nfqws, ip2net, mdig) with sha256 verification |
-| `uninstall` | Full removal (service, unit, files, symlinks) |
-| `gamefilter [mode]` | `off\|tcp\|udp\|both` — bypass for games (ports >1023) |
-| `ipset [mode]` | `none\|any\|loaded` — IP filter from `ipset-all.txt` |
-| `site <domain>` | Add domain to `list-general-user.txt` |
-| `site --list` | Show domain list |
-| `site --remove <domain>` | Remove domain from list |
-| `start\|stop\|restart` | Service control |
-| `enable\|disable` | Autostart |
-| `log [-f] [period]` | Service logs (journalctl) |
-| `--debug` | Verbose output (trace, verbose curl) |
-| `--version` | Version |
+### Strategy selection
+
+| Command | Purpose |
+|---|---|
+| `sonar list` | List strategies (`*` marks the active one) |
+| `sudo sonar use alt12` | Apply a strategy by full name or unique substring |
+| `sudo sonar try [--keep]` | Sweep strategies; `--keep` keeps the first passing one |
+| `sonar baseline` | Measure targets without bypass and safely restore the service |
+
+### Diagnostics
+
+| Command | Purpose |
+|---|---|
+| `sonar check [--json]` | Check HTTP/CDN targets; output tracks `passed`, `failed`, and `skipped` |
+| `sonar doctor` | Check the service, config, nfqws, and active strategy |
+| `sonar status [--json]` | Show state, modes, and versions; JSON excludes preflight checks |
+| `sonar log [-f] [period]` | Show the systemd journal |
+| `sonar --debug <command>` | Enable shell tracing and verbose curl output |
+
+`PASS` means that a specific check succeeded, `FAIL` means it failed, and `SKIP` means that the target could not produce a meaningful result. Skipped checks are not counted as passed.
+
+### Configuration
+
+| Command | Purpose |
+|---|---|
+| `sonar site <domain>` | Add a domain; run `sudo sonar restart` afterward |
+| `sonar site --list` | List user domains |
+| `sonar site --remove <domain>` | Remove a domain; run `sudo sonar restart` afterward |
+| `sudo sonar gamefilter off\|tcp\|udp\|both` | Configure game ports and apply immediately |
+| `sudo sonar ipset none\|any\|loaded` | Change IP filtering; run `sudo sonar restart` afterward |
+
+### Updates and service
+
+| Command | Purpose |
+|---|---|
+| `sudo sonar update [--force]` | Update Flowseal strategies, lists, and `.bin` payloads |
+| `sudo sonar upgrade [--force]` | Update `nfqws`, `ip2net`, and `mdig` with SHA-256 verification |
+| `sudo sonar start\|stop\|restart` | Control the service |
+| `sudo sonar enable\|disable` | Control autostart |
+| `sudo sonar uninstall` | Remove the service and the entire `/opt/zapret` tree |
 
 ## TUI
 
-Interactive fzf interface: strategy selection with preview, checks, settings.
-
 ```bash
-sonar-tui    # or zapret-sonar-tui
+sonar-tui
 ```
 
-![Main menu](screenshots/tui-main-menu.png)
+The fzf-based TUI shows service and update state, provides strategy previews, runs checks, and changes settings. Update checks do not block the interface: on a cold cache the header automatically changes from “checking…” to the result. Live header updates require an fzf version with `bg-transform-header`; older versions update after the menu is redrawn.
 
-![Strategy selection with preview](screenshots/tui-strategy-preview.png)
+<img src="screenshots/tui-main-menu.png" alt="Main menu" width="700">
 
-![sonar check — 7/7](screenshots/sonar-check.png)
+<details>
+<summary>More screenshots</summary>
 
-![sonar status](screenshots/sonar-status.png)
+<img src="screenshots/tui-strategy-preview.png" alt="Strategy preview" width="700">
 
-TUI checks for updates on launch: the header shows whether strategies and engine are up to date. Updates are applied manually via menu buttons.
+<img src="screenshots/sonar-check.png" alt="sonar check" width="700">
 
-## Updates
+<img src="screenshots/sonar-status.png" alt="sonar status" width="700">
 
-On CLI/TUI launch, new versions of Flowseal and zapret are checked in the background (cached for 1 hour, non-blocking). Updates remain user-driven:
+<img src="screenshots/sonar-doctor.png" alt="sonar doctor" width="700">
 
-```bash
-sudo sonar update     # update Flowseal strategies
-sudo sonar upgrade    # update zapret engine
+</details>
+
+## How it works
+
+```text
+Flowseal .bat -> translate.sh -> NFQWS_OPT -> nfqws --dry-run -> config -> systemctl restart
 ```
 
-CLI shows a notification after command execution if updates are available. TUI shows status in the header.
+1. `lib/translate.sh` extracts `winws.exe` arguments, adapts paths, and discards Windows batch commands.
+2. The result is checked for shell metacharacters because the config is sourced as root.
+3. `nfqws --dry-run` validates arguments and referenced files before the config changes.
+4. The config is written atomically and stores the selected strategy and modes.
+5. The service is restarted only after successful validation.
 
-## Debug
+## Updates and recovery
 
-```bash
-sonar --debug check    # command trace, verbose curl
-sonar --debug use alt9 # detailed translation and apply output
-```
+- A Flowseal tree is assembled in staging and activated as a whole through the `flowseal-current` symlink.
+- The version is committed and old snapshots are removed only after the active strategy has been applied successfully.
+- On failure, the previous tree is restored, config and service are verified again, and the failed snapshot is removed.
+- Reinstallation rebuilds a legacy config with the new paths before deleting old directories.
+- The installer and engine updater create backups and restore the previous state on failure; rollback failures are reported explicitly.
+- The background update check stores its user cache in `${XDG_CACHE_HOME:-~/.cache}/zapret-sonar`; mutating operations use a root-owned lock under `/run/zapret-sonar`.
 
 ## Security
 
-- **Config is sourced as root via `.`** — therefore it's generated entirely from the translated strategy and checked for shell metacharacters. User input never reaches the config.
-- **sha256** — zapret binaries are verified against `sha256sum.txt` from the release. Flowseal has no sha256 file — we trust TLS.
-- **Files in `/opt` are owned by root** — a user-writable binary run as root is a ready-made privilege escalation.
-- **No sudoers changes** — password is asked via standard sudo, NOPASSWD is intentionally absent.
-- **Backups** — before each nfqws upgrade, old binaries are copied to `.bak/`; on service failure — auto-rollback.
+- Installed files under `/opt` are root-owned; sudoers is not modified.
+- The executable shell config is generated only from sanitized strategy data.
+- zapret binaries are verified against the upstream release `sha256sum.txt`.
+- Flowseal does not publish a checksum file; its archive is fetched over TLS and validated structurally.
+- All operations that mutate config, lists, snapshots, binaries, or service state use one root-owned lock.
 
-## Limitations
+## Check limitations
 
-The tool is honest about what it doesn't do:
+- YouTube throttling on `googlevideo.com` is not measured reliably.
+- Discord Voice and other UDP scenarios are not tested.
+- QUIC/HTTP3 is not tested.
+- curl ClientHello differs from browser traffic, including multi-packet TLS.
+- `check` can pass without zapret when targets are already reachable; `try` performs a differential comparison against baseline.
 
-- **YouTube throttling is not measured.** `www.youtube.com` returns HTTP 200 without bypass — it's throttled on `googlevideo.com`, not blocked. Access to YouTube doesn't mean videos aren't slow.
-- **Discord Voice (UDP) is not tested.** Voice servers use UDP 50000–50100 + STUN. curl can't do UDP. "Discord works" = text works, voice may not.
-- **QUIC (HTTP/3) is not tested.** Browsers use HTTP/3 for YouTube. curl defaults to TCP/TLS.
-- **curl ClientHello is smaller than browser's.** Browsers send post-quantum key share (~1800 bytes, two TCP segments). A strategy may "work" with curl but fail in a browser.
-- **IPv6 is disabled.** `DISABLE_IPV6=1` in config. If the provider has working IPv6, YouTube/Google traffic via v6 bypasses nfqws. Preflight warns about this.
+## Uninstall
 
-For deep strategy selection by protocol (TLS 1.2/1.3/QUIC), use `blockcheck.sh` from zapret (in `/opt/zapret/`).
+`sudo sonar uninstall` removes the service, unit, firewall rules, symlinks, and all of `/opt/zapret`, including `config`, `config.orig`, snapshots, and user `*-user.txt` files. Back up anything you need first.
 
-## Structure
+## Project layout
 
-```
-zapret-sonar              CLI (main script)
-zapret-sonar-tui          fzf TUI
-install.sh                Installer
-lib/translate.sh          .bat → NFQWS_OPT parser
-lib/zconfig.sh            Config generation, state markers, ipset modes
-lib/health.sh             Health-check, preflight, baseline/scoring
+```text
+zapret-sonar                 CLI
+zapret-sonar-tui             fzf TUI
+install.sh                   installer
+lib/translate.sh             .bat -> NFQWS_OPT parser
+lib/zconfig.sh               config generation and ipset modes
+lib/health.sh                HTTP/content checks, baseline, and scoring
+lib/flowseal.sh              staging, activation, rollback, and pruning
+tests/                       smoke, safety, and pinned Flowseal tests
+.github/workflows/ci.yml     ShellCheck, syntax, and regression tests
+contrib/bash-completion.sh   bash completion
 ```
 
 ## Credits
 
 - [bol-van/zapret](https://github.com/bol-van/zapret) — DPI bypass engine
 - [Flowseal/zapret-discord-youtube](https://github.com/Flowseal/zapret-discord-youtube) — strategies
-
-## Troubleshooting
-
-### No strategy works
-
-1. Check Secure DNS: `sonar status` → no `WARN DNS without encryption` in environment. DoT/DoH is required — without it, the provider sees and intercepts DNS queries, making strategies unreliable.
-2. Check tunnels: `sonar status` → if `tun*`/`wg*`/`awg*` are active, traffic may bypass nfqws. Stop VPN before testing.
-3. Check IPv6: `sonar status` → if IPv6 is active, YouTube/Google traffic goes via v6 bypassing nfqws (config sets `DISABLE_IPV6=1`).
-4. Run `sudo sonar try` — sweeps all strategies with regression control.
-
-### Discord works, but voice doesn't
-
-Discord voice servers use UDP 50000–50100 + STUN. Health-check `sonar check` only tests TCP/HTTP — voice is not tested. This is a known limitation. If text works but voice doesn't, the issue is UDP blocking — use gamefilter to cover voice ports.
-
-### try found nothing
-
-1. Ensure baseline showed blocked targets: `sonar baseline` (with service stopped).
-2. If no targets are blocked — the sweep is meaningless. The provider may use a different blocking mechanism (DNS, IPv6).
-3. Use `blockcheck.sh` from zapret (in `/opt/zapret/`) — it sweeps parameters across TLS 1.2/1.3/QUIC protocols and outputs a ready-to-use command.
-4. Ensure Secure DNS is enabled (DoT/DoH in system or router settings).
-
-### After nfqws upgrade, service won't start
-
-`sonar upgrade` automatically rolls back to old binaries on failure. If rollback didn't help:
-```bash
-sudo sonar upgrade --force   # reinstalls nfqws
-```
-
-### How to revert to original zapret config
-
-The original config is saved on first strategy application:
-```bash
-sudo cp /opt/zapret/config.orig /opt/zapret/config
-sudo systemctl restart zapret
-```
-
-### What uninstall removes
-
-Service (stop + disable), systemd unit, nftables table `inet zapret`, symlinks (`zapret-sonar`, `sonar`, `zapret-sonar-tui`, `sonar-tui`), working directory `/opt/zapret`. config.orig is restored before directory deletion.
-
-### Service logs
-
-```bash
-sonar log                # last 50 lines
-sonar log -f             # follow in real time
-sonar log "1 hour ago"   # last hour
-```
 
 ## License
 

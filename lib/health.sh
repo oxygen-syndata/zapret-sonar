@@ -27,6 +27,10 @@ else
     _ZF_C_OK='' _ZF_C_BAD='' _ZF_C_WARN='' _ZF_C_DIM='' _ZF_C_OFF=''
 fi
 
+ZF_HEALTH_PASSED=0
+ZF_HEALTH_FAILED=0
+ZF_HEALTH_SKIPPED=0
+
 # Цели HTTP-проверки: "URL"
 # Проверяем все ключевые точки: web, api, gateway для Discord и google/youtube
 ZF_HEALTH_HOSTS=(
@@ -115,7 +119,7 @@ zf_check_host() {
 }
 
 # --- Медиа-проверка и замер скорости ------------------------------------------
-# zf_check_media "URL|min_bytes|magic_hex|min_speed_kb" → 0 = контент настоящий и скорость в норме.
+# zf_check_media возвращает 0=PASS, 1=FAIL, 2=SKIP.
 zf_check_media() {
     local spec="$1"
     local url="${spec%%|*}" rest="${spec#*|}"
@@ -137,10 +141,11 @@ zf_check_media() {
     speed_kb=$(( ${speed_bps%%[.,]*} / 1024 ))
 
     # 404/410 на медиа-цели — не сбой обхода, а устаревший URL (версия снята с CDN).
-    if [[ "$http_code" =~ ^(404|410|451)$ ]]; then
+    # 451 означает блокировку по юридическим причинам и считается ошибкой.
+    if [[ "$http_code" =~ ^(404|410)$ ]]; then
         printf '  %sSKIP%s  %-42s HTTP %s — цель устарела\n' "$_ZF_C_DIM" "$_ZF_C_OFF" "$url" "$http_code"
         rm -f "$tmp"
-        return 0
+        return 2
     fi
     if ! [[ "$http_code" =~ ^(200|206)$ ]]; then
         printf '  %sFAIL%s  %-42s HTTP %s (нет соединения)\n' "$_ZF_C_BAD" "$_ZF_C_OFF" "$url" "$http_code"
@@ -190,7 +195,7 @@ zf_check_media() {
 # zf_health_check → 0 если всё прошло. Печатает отчёт.
 # HTTP- и медиа-проверки запускаются параллельно для скорости.
 zf_health_check() {
-    local failed=0 total=0 url spec
+    local failed=0 skipped=0 total=0 url spec rc
     local tmp_dir; tmp_dir=$(mktemp -d) || return 1
     # shellcheck disable=SC2064
     trap "rm -rf '$tmp_dir'" RETURN
@@ -223,15 +228,27 @@ zf_health_check() {
     j=0
     for spec in "${ZF_HEALTH_MEDIA[@]}"; do
         cat "$tmp_dir/media_$j.out" 2>/dev/null
-        [[ "$(cat "$tmp_dir/media_$j.rc" 2>/dev/null)" != "0" ]] && failed=$((failed + 1))
+        rc=$(cat "$tmp_dir/media_$j.rc" 2>/dev/null)
+        case "$rc" in
+            0) ;;
+            2) skipped=$((skipped + 1)) ;;
+            *) failed=$((failed + 1)) ;;
+        esac
         j=$((j + 1))
     done
 
     rm -rf "$tmp_dir"
+    ZF_HEALTH_PASSED=$((total - failed - skipped))
+    # shellcheck disable=SC2034
+    ZF_HEALTH_FAILED=$failed
+    # shellcheck disable=SC2034
+    ZF_HEALTH_SKIPPED=$skipped
     if (( failed == 0 )); then
-        printf '\n%sИтог: %d из %d проверок пройдено%s\n' "$_ZF_C_OK" "$((total - failed))" "$total" "$_ZF_C_OFF"
+        printf '\n%sИтог: %d пройдено, %d пропущено, %d ошибок%s\n' \
+            "$_ZF_C_OK" "$ZF_HEALTH_PASSED" "$skipped" "$failed" "$_ZF_C_OFF"
     else
-        printf '\n%sИтог: %d из %d проверок пройдено%s\n' "$_ZF_C_BAD" "$((total - failed))" "$total" "$_ZF_C_OFF"
+        printf '\n%sИтог: %d пройдено, %d пропущено, %d ошибок%s\n' \
+            "$_ZF_C_BAD" "$ZF_HEALTH_PASSED" "$skipped" "$failed" "$_ZF_C_OFF"
     fi
     (( failed == 0 ))
 }
@@ -365,15 +382,15 @@ zf_score_strategy() {
 zf_preflight() {
     local warn=0
 
-    # Открытый DNS — первое требование инструкции Flowseal. Без DoH/DoT
-    # провайдер видит и может подменять запросы, и тогда любая стратегия
-    # даёт недостоверный результат.
+    # Открытый DNS позволяет провайдеру подменять ответы до подключения.
+    # Проверка видит только системный DoT через systemd-resolved, но не DoH
+    # браузера или роутера, поэтому это предупреждение, а не вердикт.
     if command -v resolvectl >/dev/null 2>&1; then
         local dns_status
         dns_status=$(resolvectl status 2>/dev/null)
         if [[ -n "$dns_status" ]] && ! printf '%s' "$dns_status" | grep -qE '\+DNSOverTLS|DNSOverTLS: yes'; then
             printf '  %sWARN%s  DNS без шифрования (нет DoT/DoH)\n' "$_ZF_C_WARN" "$_ZF_C_OFF"
-            printf '        Flowseal требует Secure DNS: без него стратегии врут.\n'
+            printf '        Secure DNS нужен при DNS-подмене; браузерный DoH здесь не определяется.\n'
             warn=$((warn + 1))
         fi
     fi

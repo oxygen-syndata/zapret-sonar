@@ -66,3 +66,35 @@ zf_activate_flowseal_tree() {
     ln -s ".flowseal-releases/$(basename "$release")" "$link_tmp" || return 1
     mv -Tf "$link_tmp" "$current" || { rm -f "$link_tmp"; return 1; }
 }
+
+zf_restore_flowseal_tree() {
+    local current="$1" target="$2"
+    local link_tmp="${current}.restore.$$"
+
+    [[ -n "$target" ]] || return 1
+    ln -s "$target" "$link_tmp" || return 1
+    mv -Tf "$link_tmp" "$current" || { rm -f "$link_tmp"; return 1; }
+}
+
+zf_remove_flowseal_release() {
+    local releases="$1" release="$2"
+    [[ -n "$release" && -d "$release" && ! -L "$release" ]] || return 1
+    [[ "$(dirname "$release")" == "$releases" ]] || return 1
+    rm -rf -- "$release"
+}
+
+zf_prune_flowseal_releases() {
+    local releases="$1" current="$2" previous="${3:-}"
+    local release base
+
+    [[ -d "$releases" && ! -L "$releases" ]] || return 1
+    current=$(basename "$current")
+    [[ -n "$previous" ]] && previous=$(basename "$previous")
+
+    for release in "$releases"/*; do
+        [[ -d "$release" && ! -L "$release" ]] || continue
+        base=$(basename "$release")
+        [[ "$base" == "$current" || "$base" == "$previous" ]] && continue
+        zf_remove_flowseal_release "$releases" "$release" || return 1
+    done
+}
