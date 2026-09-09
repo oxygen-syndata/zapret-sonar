@@ -1,0 +1,22 @@
+name: Release assets
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  assets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify release version
+        run: test "v$(sed -n 's/^version=//p' RELEASE)" = "$GITHUB_REF_NAME"
+      - name: Build release assets
+        run: bash scripts/build-release.sh dist
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" dist/* --clobber

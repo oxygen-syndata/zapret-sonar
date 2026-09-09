@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+TEST_DIR=$(mktemp -d)
+trap 'rm -rf "$TEST_DIR"' EXIT
+
+export ZF_LIBRARY_MODE=1
+export ZF_ZAPRET_BASE="$TEST_DIR/zapret"
+export ZF_ZAPRET_CONFIG="$ZF_ZAPRET_BASE/config"
+export ZF_RUNTIME_DIR="$TEST_DIR/run"
+export ZF_UPDATE_CACHE_DIR="$TEST_DIR/cache"
+mkdir -p "$ZF_ZAPRET_BASE/nfq" "$ZF_ZAPRET_BASE/flowseal-current/strategies" \
+    "$ZF_ZAPRET_BASE/flowseal-current/bin" "$ZF_ZAPRET_BASE/flowseal-current/lists" "$ZF_RUNTIME_DIR"
+printf '#!/usr/bin/env bash\nprintf "github version v72.13 (test)\\n"\n' > "$ZF_ZAPRET_BASE/nfq/nfqws"
+chmod +x "$ZF_ZAPRET_BASE/nfq/nfqws"
+printf '1.10.2\n' > "$ZF_ZAPRET_BASE/.flowseal-version"
+printf '# zapret-sonar-strategy: general.bat\n# zapret-sonar-gamefilter: off\n# zapret-sonar-ipset: none\n' > "$ZF_ZAPRET_CONFIG"
+printf '203.0.113.113/32\n' > "$ZF_ZAPRET_BASE/flowseal-current/lists/ipset-all.txt"
+
+# shellcheck source=../zapret-sonar
+source "$PROJECT_DIR/zapret-sonar"
+systemctl() { [[ "$1" == is-active ]] && printf 'active\n'; }
+status=$(cmd_status_json)
+jq -e '.schema_version == 1 and .command == "status" and .sonar_version == "1.3.0" and .service_state == "active"' <<< "$status" >/dev/null
+
+# shellcheck disable=SC2034
+zf_health_check() { ZF_HEALTH_PASSED=5; ZF_HEALTH_FAILED=1; ZF_HEALTH_SKIPPED=1; return 1; }
+set +e
+check=$(cmd_check --json); rc=$?
+set -e
+(( rc == 1 ))
+jq -e '.schema_version == 1 and .command == "check" and (.ok | not) and .passed == 5 and .failed == 1 and .skipped == 1 and .scope == "http-content"' <<< "$check" >/dev/null
+printf 'PASS: status and check JSON contracts are versioned and valid\n'

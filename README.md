@@ -84,6 +84,8 @@ Bash completion: `source contrib/bash-completion.sh` или установите
 | `sonar check [--json]` | Проверить HTTP/CDN-цели; результат содержит `passed`, `failed`, `skipped` |
 | `sonar doctor` | Проверить сервис, конфиг, nfqws и активную стратегию |
 | `sonar status [--json]` | Показать состояние, режимы и версии; JSON не включает preflight |
+| `sonar validate [--json]` | Проверить все стратегии через трансляцию и `nfqws --dry-run`, ничего не применяя |
+| `sonar export-diagnostic [--output файл]` | Безопасный JSON для issue без сырого конфига, логов, адресов и пользовательских списков |
 | `sonar log [-f] [период]` | Показать журнал systemd |
 | `sonar --debug <команда>` | Включить shell trace и подробный curl |
 
@@ -105,6 +107,9 @@ Bash completion: `source contrib/bash-completion.sh` или установите
 |---|---|
 | `sudo sonar update [--force]` | Обновить стратегии, списки и `.bin` Flowseal |
 | `sudo sonar upgrade [--force]` | Обновить `nfqws`, `ip2net`, `mdig` с проверкой sha256 |
+| `sonar self-update [--force]` | Обновить zapret-sonar из release asset с проверкой SHA-256 и rollback |
+| `sonar snapshots [--json]` | Показать текущий и резервный snapshots Flowseal |
+| `sudo sonar rollback [snapshot]` | Переключиться на предыдущий или выбранный snapshot Flowseal |
 | `sudo sonar start\|stop\|restart` | Управлять сервисом |
 | `sudo sonar enable\|disable` | Управлять автозапуском |
 | `sudo sonar uninstall` | Полностью удалить сервис и `/opt/zapret` |
@@ -116,6 +121,8 @@ sonar-tui
 ```
 
 TUI на fzf показывает состояние сервиса и обновлений, позволяет выбирать стратегии с preview, запускать проверки и менять настройки. Проверка обновлений не блокирует интерфейс: на холодном кэше статус меняется с «проверка…» на результат автоматически. Для live-обновления header нужен fzf с `bg-transform-header`; на старых версиях статус обновится после перерисовки меню.
+
+В разделе настроек доступны добавление, просмотр и удаление пользовательских сайтов, обновление Flowseal, откат snapshots, обновление движка и самого zapret-sonar.
 
 <img src="screenshots/tui-main-menu.png" alt="Главное меню" width="700">
 
@@ -153,11 +160,14 @@ TUI на fzf показывает состояние сервиса и обно�
 - Установщик и обновление движка создают резервные копии и восстанавливают предыдущее состояние при ошибке; остановленный до обновления сервис остаётся остановленным.
 - Фоновый update-check хранит пользовательский кэш в `${XDG_CACHE_HOME:-~/.cache}/zapret-sonar`; lock изменяющих операций находится в `/run/zapret-sonar`.
 
+Если Flowseal временно недоступен, текущий набор продолжает работать. Посмотрите сохранённые версии через `sonar snapshots` и переключитесь командой `sudo sonar rollback [snapshot]`. Для восстановления самого zapret-sonar переустановите нужный GitHub Release через `install.sh`; исходный checkout и рабочий сервисный конфиг установщик сохраняет.
+
 ## Безопасность
 
 - Файлы установки в `/opt` принадлежат root; `sudoers` не изменяется.
 - Исполняемый shell-конфиг создаётся только из санитизированной стратегии.
 - Бинарники zapret сверяются с `sha256sum.txt` upstream-релиза.
+- Self-update использует собственный release archive и `SHA256SUMS`, проверяет структуру и синтаксис до атомарного переключения версии.
 - У Flowseal нет опубликованного checksum-файла; архив загружается по TLS и проверяется структурно.
 - Все операции, изменяющие конфиг, списки, snapshots, бинарники или сервис, используют общий root-owned lock.
 
@@ -184,6 +194,8 @@ lib/zconfig.sh               генерация конфига и ipset-режи
 lib/health.sh                HTTP/content checks, baseline и scoring
 lib/flowseal.sh              staging, activation, rollback и pruning
 tests/                       smoke, safety и pinned Flowseal tests
+schemas/                     версионированные JSON Schema для машинного вывода
+scripts/build-release.sh     сборка проверяемого release asset
 .github/workflows/ci.yml     ShellCheck, syntax и regression tests
 contrib/bash-completion.sh   completion для bash
 ```

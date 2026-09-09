@@ -11,8 +11,19 @@
 
 set -uo pipefail
 
-TUI_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
-CLI="$TUI_DIR/zapret-sonar"
+TUI_SELF="$(readlink -f "${BASH_SOURCE[0]}")"
+if [[ "${1:-}" == --install-root ]]; then
+    [[ $# -ge 2 && -d "$2" && ! -L "$2" ]] || { printf 'некорректный install root\n' >&2; exit 1; }
+    TUI_INSTALL_ROOT="$(readlink -f "$2")"
+    [[ "$(stat -c %u "$TUI_INSTALL_ROOT" 2>/dev/null)" == 0 \
+        && "$(stat -c %u "$TUI_SELF" 2>/dev/null)" == 0 \
+        && "$TUI_SELF" == "$TUI_INSTALL_ROOT"/releases/*/zapret-sonar-tui ]] \
+        || { printf 'недоверенный install root\n' >&2; exit 1; }
+    shift 2
+fi
+
+TUI_DIR="$(cd "$(dirname "$TUI_SELF")" && pwd)"
+CLI="${TUI_INSTALL_ROOT:-$TUI_DIR}/zapret-sonar"
 [[ -x "$CLI" ]] || { printf 'не найден zapret-sonar рядом с TUI: %s\n' "$CLI" >&2; exit 1; }
 command -v fzf >/dev/null 2>&1 || { printf 'нужен fzf: pacman -S fzf\n' >&2; exit 1; }
 
@@ -169,13 +180,44 @@ action_ipset() {
 }
 
 action_site() {
-    printf '\n%sДомен%s (поддомены учитываются автоматически): ' "$C_ACC" "$C_OFF"
-    local d; read -r d
-    [[ -z "$d" ]] && return 0
-    "$CLI" site "$d"
+    local action d
+    action=$(printf 'Добавить домен\nУдалить домен\nПоказать список\n' | fzf --height=40% --border=rounded --prompt='сайты > ')
+    case "$action" in
+        'Показать список') "$CLI" site --list; pause; return ;;
+        'Удалить домен')
+            d=$("$CLI" site --list 2>/dev/null | fzf --height=60% --border=rounded --prompt='удалить > ')
+            [[ -n "$d" ]] || return 0
+            "$CLI" site --remove "$d" ;;
+        'Добавить домен')
+            printf '\n%sДомен%s (поддомены учитываются автоматически): ' "$C_ACC" "$C_OFF"
+            read -r d
+            [[ -n "$d" ]] || return 0
+            "$CLI" site "$d" ;;
+        *) return 0 ;;
+    esac
     printf '\nПерезапустить сервис сейчас? [y/N] '
     local a; read -r a
     [[ "$a" =~ ^[yYдД]$ ]] && sudo "$CLI" restart
+    pause
+}
+
+action_self_update() {
+    printf '\n%sОбновление zapret-sonar с GitHub%s\n\n' "$C_ACC" "$C_OFF"
+    printf 'Продолжить? [y/N] '
+    local a; read -r a
+    [[ "$a" =~ ^[yYдД]$ ]] || return 0
+    "$CLI" self-update
+    pause
+}
+
+action_rollback() {
+    local snapshot
+    snapshot=$("$CLI" _snapshot_ids 2>/dev/null | fzf --height=50% --border=rounded --prompt='snapshot > ')
+    [[ -n "$snapshot" ]] || return 0
+    printf '\n%sПереключить Flowseal на %s?%s [y/N] ' "$C_WARN" "$snapshot" "$C_OFF"
+    local a; read -r a
+    [[ "$a" =~ ^[yYдД]$ ]] || return 0
+    "$CLI" rollback "$snapshot"
     pause
 }
 
@@ -234,11 +276,13 @@ main_menu() {
             'Показать, что заблокировано без обхода' \
             'Состояние и окружение' \
             "$SEP_CONF" \
-            'Добавить сайт в список обхода' \
+            'Управление сайтами обхода' \
             'Обход для игр' \
             'Фильтр по IP-адресам' \
             'Обновить стратегии Flowseal' \
+            'Откатить стратегии Flowseal' \
             'Обновить движок zapret' \
+            'Обновить zapret-sonar' \
             "$SEP_SVC" \
             'Запуск, остановка, автозапуск' \
             'Выход' \
@@ -255,11 +299,13 @@ main_menu() {
             'Проверить HTTP/CDN-цели')                    printf '\n'; "$CLI" check; pause ;;
             'Показать, что заблокировано без обхода')    printf '\n'; "$CLI" baseline; pause ;;
             'Состояние и окружение')                     printf '\n'; "$CLI" status; pause ;;
-            'Добавить сайт в список обхода')             action_site ;;
+            'Управление сайтами обхода')                 action_site ;;
             'Обход для игр')                             action_gamefilter ;;
             'Фильтр по IP-адресам')                      action_ipset ;;
             'Обновить стратегии Flowseal')     action_update ;;
+            'Откатить стратегии Flowseal')     action_rollback ;;
             'Обновить движок zapret')          action_upgrade ;;
+            'Обновить zapret-sonar')           action_self_update ;;
             'Запуск, остановка, автозапуск')             action_service ;;
             'Выход'|'')                                  break ;;
             *) ;;  # разделитель или неизвестный пункт — просто перерисовать

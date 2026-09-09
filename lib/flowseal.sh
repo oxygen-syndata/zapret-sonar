@@ -105,3 +105,36 @@ zf_prune_flowseal_releases() {
         zf_remove_flowseal_release "$releases" "$release" || return 1
     done
 }
+
+zf_flowseal_release_id() {
+    local release="$1" releases="$2" id
+    [[ -d "$release" && ! -L "$release" && "$(dirname "$release")" == "$releases" ]] || return 1
+    id=$(basename "$release")
+    [[ -n "$id" && "$id" != . && "$id" != .. && "$id" != */* ]] || return 1
+    printf '%s\n' "$id"
+}
+
+zf_write_flowseal_metadata() {
+    local release="$1" releases="$2" version="$3" created_at="${4:-}"
+    zf_flowseal_release_id "$release" "$releases" >/dev/null || return 1
+    [[ "$version" == main || "$version" =~ ^[0-9]+([.][0-9]+)*$ ]] || return 1
+    [[ -n "$created_at" ]] || created_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+    local tmp
+    tmp=$(mktemp "$release/.flowseal-release.XXXXXX") || return 1
+    printf 'format=1\nflowseal_version=%s\ncreated_at=%s\n' "$version" "$created_at" > "$tmp" \
+        && chmod 644 "$tmp" && mv -f "$tmp" "$release/.flowseal-release" \
+        || { rm -f "$tmp"; return 1; }
+}
+
+zf_read_flowseal_metadata() {
+    local release="$1" key="$2" file line name value result="" seen=0
+    file="$release/.flowseal-release"
+    [[ -f "$file" && ! -L "$file" ]] || return 1
+    while IFS= read -r line; do
+        name=${line%%=*}; value=${line#*=}
+        case "$name" in format|flowseal_version|created_at) ;; *) return 1 ;; esac
+        if [[ "$name" == "$key" ]]; then result="$value"; seen=$((seen + 1)); fi
+    done < "$file"
+    (( seen == 1 )) || return 1
+    printf '%s\n' "$result"
+}

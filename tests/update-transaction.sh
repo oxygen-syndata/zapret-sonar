@@ -15,7 +15,7 @@ mkdir -p "$ZF_ZAPRET_BASE/.flowseal-releases/old/strategies" \
     "$ZF_ZAPRET_BASE/.flowseal-releases/old/lists" \
     "$ZF_ZAPRET_BASE/nfq"
 ln -s '.flowseal-releases/old' "$ZF_ZAPRET_BASE/flowseal-current"
-printf 'old\n' > "$ZF_ZAPRET_BASE/.flowseal-version"
+printf '1.0.0\n' > "$ZF_ZAPRET_BASE/.flowseal-version"
 printf '# zapret-sonar-strategy: general.bat\n# zapret-sonar-gamefilter: off\n# zapret-sonar-ipset: none\n' > "$ZF_ZAPRET_BASE/config"
 printf '@echo off\n"%%BIN%%winws.exe" --wf-tcp=443 --dpi-desync=fake\n' \
     > "$ZF_ZAPRET_BASE/.flowseal-releases/old/strategies/general.bat"
@@ -34,7 +34,7 @@ tar -czf "$TEST_DIR/flowseal.tar.gz" -C "$TEST_DIR" source
 source "$PROJECT_DIR/zapret-sonar"
 need_root() { return 0; }
 _zf_lock() { :; }
-_zf_github_latest_tag() { printf 'new\n'; }
+_zf_github_latest_tag() { printf '2.0.0\n'; }
 curl() {
     local out=""
     while (( $# )); do
@@ -53,7 +53,7 @@ for attempt in 1 2; do
         exit 1
     fi
     [[ "$(readlink "$ZF_ZAPRET_BASE/flowseal-current")" == '.flowseal-releases/old' ]]
-    [[ "$(cat "$ZF_ZAPRET_BASE/.flowseal-version")" == old ]]
+    [[ "$(cat "$ZF_ZAPRET_BASE/.flowseal-version")" == 1.0.0 ]]
     [[ "$(find "$ZF_ZAPRET_BASE/.flowseal-releases" -mindepth 1 -maxdepth 1 -type d | wc -l)" == 1 ]]
 done
 
@@ -65,5 +65,5 @@ if output=$(cmd_update --force 2>&1); then
     exit 1
 fi
 [[ "$output" == *'автоматический откат набора Flowseal не удался'* ]]
-[[ "$(cat "$ZF_ZAPRET_BASE/.flowseal-version")" == old ]]
+[[ "$(cat "$ZF_ZAPRET_BASE/.flowseal-version")" == 1.0.0 ]]
 printf 'PASS: failed Flowseal rollback is reported explicitly\n'

@@ -1,0 +1,34 @@
+name: Bug report
+description: Report a reproducible zapret-sonar problem
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Run `sonar export-diagnostic --output diagnostic.json` and attach the file below. It excludes the raw config, logs, domain/IP lists, addresses, hostname, and username.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Run ...
+        2. Select ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostic
+    attributes:
+      label: Diagnostic report
+      description: Attach diagnostic.json or paste its contents. Do not paste raw config, logs, or user lists.
+      render: json
+    validations:
+      required: true

@@ -82,3 +82,18 @@ rollback_install
 [[ "$(readlink "$BIN_DEST/sonar")" == /old/target ]]
 [[ "$(cat "$INSTALL_UNIT")" == old-unit ]]
 printf 'PASS: installer rollback restores base, command links and unit\n'
+
+layout_root="$TEST_DIR/layout-case"
+mkdir -p "$layout_root/zapret" "$layout_root/bin"
+ZAPRET_BASE="$layout_root/zapret"
+BIN_DEST="$layout_root/bin"
+SERVICE_NAME=zapret-layout
+install_flow
+[[ -x "$ZAPRET_BASE/zapret-sonar/zapret-sonar" ]]
+[[ -x "$ZAPRET_BASE/zapret-sonar/zapret-sonar-tui" ]]
+[[ "$(readlink "$ZAPRET_BASE/zapret-sonar/current")" == releases/1.3.0 ]]
+[[ -f "$ZAPRET_BASE/zapret-sonar/releases/1.3.0/RELEASE" ]]
+grep -Fq 'ZF_BIN_DEST="${ZF_BIN_DEST:-'"$BIN_DEST"'}"' "$ZAPRET_BASE/zapret-sonar/lib/paths.sh"
+[[ "$(readlink -f "$BIN_DEST/sonar")" == "$ZAPRET_BASE/zapret-sonar/zapret-sonar" ]]
+grep -Fq -- '--install-root "$root"' "$ZAPRET_BASE/zapret-sonar/zapret-sonar"
+printf 'PASS: installer creates versioned application layout and stable launchers\n'

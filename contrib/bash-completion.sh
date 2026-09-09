@@ -8,7 +8,7 @@ _sonar_completion() {
 
     if (( COMP_CWORD == 1 )); then
         # shellcheck disable=SC2207
-        COMPREPLY=( $(compgen -W "list use status check doctor try baseline update upgrade uninstall gamefilter ipset site start stop restart enable disable log help --version --help --debug" -- "$cur") )
+        COMPREPLY=( $(compgen -W "list use status check validate export-diagnostic snapshots rollback doctor try baseline update upgrade self-update uninstall gamefilter ipset site start stop restart enable disable log help --version --help --debug" -- "$cur") )
         return 0
     fi
 
@@ -36,9 +36,17 @@ _sonar_completion() {
             # shellcheck disable=SC2207
             COMPREPLY=( $(compgen -W "--force" -- "$cur") )
             return 0 ;;
-        status|check)
+        self-update)
+            # shellcheck disable=SC2207
+            COMPREPLY=( $(compgen -W "--force --version" -- "$cur") )
+            return 0 ;;
+        status|check|validate|snapshots)
             # shellcheck disable=SC2207
             COMPREPLY=( $(compgen -W "--json" -- "$cur") )
+            return 0 ;;
+        export-diagnostic)
+            # shellcheck disable=SC2207
+            COMPREPLY=( $(compgen -W "--output" -- "$cur") )
             return 0 ;;
         site)
             # shellcheck disable=SC2207
@@ -48,7 +56,7 @@ _sonar_completion() {
 
     if [[ "${COMP_WORDS[1]}" == "help" ]]; then
         # shellcheck disable=SC2207
-        COMPREPLY=( $(compgen -W "list use status check doctor try baseline update upgrade uninstall gamefilter ipset site start stop restart enable disable log" -- "$cur") )
+        COMPREPLY=( $(compgen -W "list use status check validate export-diagnostic snapshots rollback doctor try baseline update upgrade self-update uninstall gamefilter ipset site start stop restart enable disable log" -- "$cur") )
         return 0
     fi
 }

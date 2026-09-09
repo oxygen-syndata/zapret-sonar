@@ -27,6 +27,7 @@ ZAPRET_BASE="${ZAPRET_BASE:-/opt/zapret}"
 BIN_DEST="${BIN_DEST:-/usr/local/bin}"
 SERVICE_NAME="${SERVICE_NAME:-zapret}"
 MIGRATE_ZAPRET="${MIGRATE_ZAPRET:-0}"
+INSTALL_DRY_RUN=0
 
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STAGING=""
@@ -143,7 +144,7 @@ unit_is_foreign() {
 }
 
 preflight() {
-    [[ $EUID -eq 0 ]] || die "запускать от root: sudo ./install.sh"
+    (( INSTALL_DRY_RUN )) || [[ $EUID -eq 0 ]] || die "запускать от root: sudo ./install.sh"
     (( BASH_VERSINFO[0] >= 4 )) || die "нужен bash 4 или новее"
 
     local missing=()
@@ -162,7 +163,7 @@ preflight() {
     [[ -d /run/systemd/system ]] || die "systemd не обнаружен — этот установщик рассчитан на systemd"
 
     local f
-    for f in zapret-sonar lib/translate.sh lib/zconfig.sh lib/health.sh lib/flowseal.sh; do
+    for f in zapret-sonar zapret-sonar-tui RELEASE lib/translate.sh lib/zconfig.sh lib/health.sh lib/flowseal.sh lib/self-update.sh; do
         [[ -f "$SRC_DIR/$f" ]] || die "рядом с install.sh нет $f"
     done
 
@@ -303,11 +304,20 @@ install_flowseal() {
     release="$ZAPRET_BASE/.flowseal-releases/$FLOWSEAL_VER-$(date +%s)-$$"
     local old_target=""
     [[ -L "$current" ]] && old_target=$(readlink "$current")
+    if [[ -n "$old_target" && -f "$ZAPRET_BASE/.flowseal-version" ]]; then
+        local old_release="$ZAPRET_BASE/$old_target" old_version
+        old_version=$(tr -d '[:space:]' < "$ZAPRET_BASE/.flowseal-version")
+        [[ -f "$old_release/.flowseal-release" ]] \
+            || zf_write_flowseal_metadata "$old_release" "$ZAPRET_BASE/.flowseal-releases" "${old_version#v}" \
+            || die "не удалось записать metadata предыдущего Flowseal release"
+    fi
 
     rm -rf "$stage"
     zf_prepare_flowseal_tree "$src" "$stage" "$old_lists" || die "не удалось подготовить набор Flowseal"
     zf_activate_flowseal_tree "$stage" "$release" "$current" || die "не удалось активировать набор Flowseal"
     chown -R root:root "$release"
+    zf_write_flowseal_metadata "$release" "$ZAPRET_BASE/.flowseal-releases" "$FLOWSEAL_VER" \
+        || die "не удалось записать metadata Flowseal release"
     INSTALL_FLOWSEAL_RELEASE="$release"
     INSTALL_FLOWSEAL_OLD_TARGET="$old_target"
     INSTALL_LEGACY_FLOWSEAL="$legacy"
@@ -316,10 +326,15 @@ install_flowseal() {
 
 install_flow() {
     log "Установка zapret-sonar в $BIN_DEST"
-    local dest="$ZAPRET_BASE/zapret-sonar"
-    mkdir -p "$dest/lib"
-    install -m 755 "$SRC_DIR/zapret-sonar" "$dest/zapret-sonar"
-    install -m 644 "$SRC_DIR/lib/"*.sh "$dest/lib/"
+    local dest="$ZAPRET_BASE/zapret-sonar" version release
+    version=$(sed -n 's/^version=//p' "$SRC_DIR/RELEASE")
+    [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "некорректный RELEASE"
+    release="$dest/releases/$version"
+    install -d -m 0755 "$dest" "$dest/releases" "$release" "$release/lib" "$dest/lib"
+    install -m 755 "$SRC_DIR/zapret-sonar" "$release/zapret-sonar"
+    install -m 755 "$SRC_DIR/zapret-sonar-tui" "$release/zapret-sonar-tui"
+    install -m 644 "$SRC_DIR/RELEASE" "$release/RELEASE"
+    install -m 644 "$SRC_DIR/lib/"*.sh "$release/lib/"
 
     # Фиксируем пути установки. Переменные окружения тут не годятся: CLI
     # перезапускает себя через sudo, который окружение не пробрасывает.
@@ -338,13 +353,32 @@ BIN_DEST=$BIN_DEST
 EOF
     chmod 644 "$dest/lib/paths.sh"
 
+cat > "$dest/zapret-sonar" <<'EOF'
+#!/usr/bin/env bash
+set -eu
+root=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
+exec "$root/current/zapret-sonar" --install-root "$root" "$@"
+EOF
+    cat > "$dest/zapret-sonar-tui" <<'EOF'
+#!/usr/bin/env bash
+set -eu
+root=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
+exec "$root/current/zapret-sonar-tui" --install-root "$root" "$@"
+EOF
+    chmod 755 "$dest/zapret-sonar" "$dest/zapret-sonar-tui"
+    local old_app_target=""
+    [[ -L "$dest/current" ]] && old_app_target=$(readlink "$dest/current")
+    ln -sfn "releases/$version" "$dest/current"
+    if [[ -n "$old_app_target" && "$old_app_target" != "releases/$version" ]]; then
+        ln -sfn "$old_app_target" "$dest/previous"
+    fi
+
     ln -sf "$dest/zapret-sonar" "$BIN_DEST/zapret-sonar"
     ln -sf "$dest/zapret-sonar" "$BIN_DEST/sonar"
 
     # TUI ставится, только если рядом лежит и есть fzf: на headless-сервере
     # он бесполезен, а тянуть зависимость ради неиспользуемого файла незачем.
     if [[ -f "$SRC_DIR/zapret-sonar-tui" ]]; then
-        install -m 755 "$SRC_DIR/zapret-sonar-tui" "$dest/zapret-sonar-tui"
         ln -sf "$dest/zapret-sonar-tui" "$BIN_DEST/zapret-sonar-tui"
         ln -sf "$dest/zapret-sonar-tui" "$BIN_DEST/sonar-tui"
         if command -v fzf >/dev/null 2>&1; then
@@ -355,6 +389,7 @@ EOF
     fi
 
     chown -R root:root "$dest"
+    chmod 0755 "$dest" "$dest/releases" "$release" "$release/lib" "$dest/lib"
     info "команда: zapret-sonar --help (или: sonar --help)"
 }
 
@@ -433,7 +468,28 @@ check_conflicts() {
 }
 
 main() {
+    local arg
+    for arg in "$@"; do
+        case "$arg" in
+            --dry-run) INSTALL_DRY_RUN=1 ;;
+            --non-interactive) ;;
+            -h|--help)
+                printf 'Использование: sudo ./install.sh [--non-interactive] [--dry-run]\n'
+                printf '  --dry-run          проверить окружение и показать план без изменений\n'
+                printf '  --non-interactive  явно подтвердить отсутствие интерактивных запросов\n'
+                return 0 ;;
+            *) die "неизвестный параметр: $arg" ;;
+        esac
+    done
     preflight
+    if (( INSTALL_DRY_RUN )); then
+        printf 'Проверка пройдена. План установки:\n'
+        printf '  zapret %s -> %s\n' "$ZAPRET_VER" "$ZAPRET_BASE"
+        printf '  Flowseal %s -> %s/flowseal-current\n' "$FLOWSEAL_VER" "$ZAPRET_BASE"
+        printf '  команды -> %s\n' "$BIN_DEST"
+        printf '  systemd unit -> /etc/systemd/system/%s.service\n' "$SERVICE_NAME"
+        return 0
+    fi
     acquire_install_lock
     local arch; arch=$(detect_arch)
     STAGING=$(mktemp -d /tmp/zapret-sonar-install.XXXXXX)

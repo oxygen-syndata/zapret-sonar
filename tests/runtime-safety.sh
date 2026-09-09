@@ -37,6 +37,7 @@ flowseal_local=1.10.2
 flowseal_remote=1.10.2
 zapret_local=v72.13
 zapret_remote=v72.13
+sonar_remote=1.2.2
 last_check=slot[\$(touch $marker)]
 EOF
 chmod 600 "$ZF_UPDATE_CACHE_DIR/update-check"
@@ -82,6 +83,7 @@ cat > "$TEST_DIR/bin/curl" <<'EOF'
 sleep 1
 case "$*" in
     *Flowseal*) printf '{"tag_name":"1.10.2"}\n' ;;
+    *zapret-sonar*) printf '{"tag_name":"v1.3.0"}\n' ;;
     *) printf '{"tag_name":"v72.13"}\n' ;;
 esac
 EOF

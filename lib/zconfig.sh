@@ -156,10 +156,13 @@ zf_ipset_mode() {
 
 # zf_set_ipset_mode LISTS_DIR MODE
 zf_set_ipset_mode() {
-    local lists_dir="$1" mode="$2"
+    local lists_dir="$1" mode="$2" sync_marker="${3:-1}"
     local f="$lists_dir/ipset-all.txt" b="$lists_dir/ipset-all.txt.backup"
     local cur; cur=$(zf_ipset_mode "$lists_dir")
-    [[ "$cur" == "$mode" ]] && { zf_write_state_marker ipset "$mode"; return; }
+    if [[ "$cur" == "$mode" ]]; then
+        if (( sync_marker )); then zf_write_state_marker ipset "$mode"; else return 0; fi
+        return
+    fi
 
     # Полный список нельзя потерять: перед уходом из loaded сохраняем его.
     if [[ "$cur" == "loaded" && ! -f "$b" ]]; then
@@ -184,7 +187,7 @@ zf_set_ipset_mode() {
     esac
     chmod 644 "$tmp" || { rm -f "$tmp" "$previous"; return 1; }
     mv -f "$tmp" "$f" || { rm -f "$tmp" "$previous"; return 1; }
-    if ! zf_write_state_marker ipset "$mode"; then
+    if (( sync_marker )) && ! zf_write_state_marker ipset "$mode"; then
         mv -f "$previous" "$f" || true
         return 1
     fi

@@ -27,7 +27,7 @@ jobs:
 
       - name: Check bash syntax
         run: |
-          for f in zapret-sonar zapret-sonar-tui install.sh lib/*.sh contrib/*.sh tests/*.sh; do
+          for f in zapret-sonar zapret-sonar-tui install.sh lib/*.sh contrib/*.sh tests/*.sh scripts/*.sh; do
             echo ":: Checking $f"
             bash -n "$f" || exit 1
           done
@@ -58,8 +58,32 @@ jobs:
       - name: Test artifact validation
         run: bash tests/artifact-validation.sh
 
+      - name: Test JSON contracts
+        run: bash tests/json-contracts.sh
+
+      - name: Test diagnostic export
+        run: bash tests/diagnostic-export.sh
+
+      - name: Test strategy validation
+        run: bash tests/validate.sh
+
+      - name: Test self-update primitives
+        run: bash tests/self-update.sh
+
+      - name: Test self-update command
+        run: bash tests/self-update-command.sh
+
+      - name: Test Flowseal rollback
+        run: bash tests/flowseal-rollback.sh
+
+      - name: Test installer CLI
+        run: bash tests/installer-cli.sh
+
       - name: Test reinstall migration
         run: bash tests/install-migration.sh
 
       - name: Test pinned Flowseal release
         run: bash tests/flowseal-release.sh
+
+      - name: Build release asset
+        run: bash scripts/build-release.sh dist

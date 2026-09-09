@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "sonar_version", "platform", "status", "installation", "validation", "privacy"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "kind": { "const": "zapret-sonar-diagnostic" },
+    "sonar_version": { "type": "string" },
+    "platform": { "type": "object" },
+    "status": { "type": "object" },
+    "installation": { "type": "object" },
+    "validation": { "type": "object" },
+    "privacy": { "type": "object" }
+  }
+}

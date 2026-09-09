@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "command", "ok", "summary", "results"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "command": { "const": "validate" },
+    "ok": { "type": "boolean" },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["total", "passed", "failed"],
+      "properties": {
+        "total": { "type": "integer", "minimum": 0 },
+        "passed": { "type": "integer", "minimum": 0 },
+        "failed": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["strategy", "status", "stage", "reason", "reference"],
+        "properties": {
+          "strategy": { "type": "string" },
+          "status": { "enum": ["pass", "fail"] },
+          "stage": { "type": ["string", "null"] },
+          "reason": { "type": ["string", "null"] },
+          "reference": { "type": ["string", "null"] }
+        }
+      }
+    }
+  }
+}

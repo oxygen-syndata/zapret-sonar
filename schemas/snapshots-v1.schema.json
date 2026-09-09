@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "command", "snapshots"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "command": { "const": "snapshots" },
+    "snapshots": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "state", "flowseal_version", "created_at"],
+        "properties": {
+          "id": { "type": "string" },
+          "state": { "enum": ["current", "rollback"] },
+          "flowseal_version": { "type": ["string", "null"] },
+          "created_at": { "type": ["string", "null"] }
+        }
+      }
+    }
+  }
+}

@@ -84,6 +84,8 @@ Tested on CachyOS (Arch, x86_64) and Ubuntu Server 26.04 LTS (x86_64). Other dis
 | `sonar check [--json]` | Check HTTP/CDN targets; output tracks `passed`, `failed`, and `skipped` |
 | `sonar doctor` | Check the service, config, nfqws, and active strategy |
 | `sonar status [--json]` | Show state, modes, and versions; JSON excludes preflight checks |
+| `sonar validate [--json]` | Validate every strategy through translation and `nfqws --dry-run` without applying it |
+| `sonar export-diagnostic [--output file]` | Safe issue JSON without raw config, logs, addresses, or user lists |
 | `sonar log [-f] [period]` | Show the systemd journal |
 | `sonar --debug <command>` | Enable shell tracing and verbose curl output |
 
@@ -105,6 +107,9 @@ Tested on CachyOS (Arch, x86_64) and Ubuntu Server 26.04 LTS (x86_64). Other dis
 |---|---|
 | `sudo sonar update [--force]` | Update Flowseal strategies, lists, and `.bin` payloads |
 | `sudo sonar upgrade [--force]` | Update `nfqws`, `ip2net`, and `mdig` with SHA-256 verification |
+| `sonar self-update [--force]` | Update zapret-sonar from a release asset with SHA-256 verification and rollback |
+| `sonar snapshots [--json]` | List the current and rollback Flowseal snapshots |
+| `sudo sonar rollback [snapshot]` | Switch to the previous or selected Flowseal snapshot |
 | `sudo sonar start\|stop\|restart` | Control the service |
 | `sudo sonar enable\|disable` | Control autostart |
 | `sudo sonar uninstall` | Remove the service and the entire `/opt/zapret` tree |
@@ -116,6 +121,8 @@ sonar-tui
 ```
 
 The fzf-based TUI shows service and update state, provides strategy previews, runs checks, and changes settings. Update checks do not block the interface: on a cold cache the header automatically changes from “checking…” to the result. Live header updates require an fzf version with `bg-transform-header`; older versions update after the menu is redrawn.
+
+The settings section can add, list, and remove user sites, update Flowseal, roll snapshots back, and update both the engine and zapret-sonar itself.
 
 <img src="screenshots/tui-main-menu.png" alt="Main menu" width="700">
 
@@ -153,11 +160,14 @@ Flowseal .bat -> translate.sh -> NFQWS_OPT -> nfqws --dry-run -> config -> syste
 - The installer and engine updater create backups and restore the previous state on failure; a service that was stopped before an engine update remains stopped.
 - The background update check stores its user cache in `${XDG_CACHE_HOME:-~/.cache}/zapret-sonar`; mutating operations use a root-owned lock under `/run/zapret-sonar`.
 
+If Flowseal is temporarily unavailable, the active tree keeps working. List retained versions with `sonar snapshots` and switch with `sudo sonar rollback [snapshot]`. To recover zapret-sonar itself, reinstall the required GitHub Release through `install.sh`; the installer preserves the source checkout and active service config.
+
 ## Security
 
 - Installed files under `/opt` are root-owned; sudoers is not modified.
 - The executable shell config is generated only from sanitized strategy data.
 - zapret binaries are verified against the upstream release `sha256sum.txt`.
+- Self-update uses a dedicated release archive and `SHA256SUMS`, validating structure and syntax before an atomic version switch.
 - Flowseal does not publish a checksum file; its archive is fetched over TLS and validated structurally.
 - All operations that mutate config, lists, snapshots, binaries, or service state use one root-owned lock.
 
@@ -184,6 +194,8 @@ lib/zconfig.sh               config generation and ipset modes
 lib/health.sh                HTTP/content checks, baseline, and scoring
 lib/flowseal.sh              staging, activation, rollback, and pruning
 tests/                       smoke, safety, and pinned Flowseal tests
+schemas/                     versioned JSON Schemas for machine-readable output
+scripts/build-release.sh     verified release asset builder
 .github/workflows/ci.yml     ShellCheck, syntax, and regression tests
 contrib/bash-completion.sh   bash completion
 ```
