@@ -32,6 +32,7 @@ zf_write_flowseal_metadata "$releases/current" "$releases" 2.0.0 2026-09-09T00:0
 zf_write_flowseal_metadata "$releases/old" "$releases" 1.0.0 2026-09-08T00:00:00Z
 need_root() { return 0; }
 _zf_lock() { :; }
+_zf_require_root() { :; }
 _zf_invalidate_update_caches() { :; }
 zf_validate_flowseal_tree() { return 0; }
 cmd_apply() { [[ "$(readlink "$ZF_FLOWSEAL_CURRENT")" == .flowseal-releases/old ]]; }
