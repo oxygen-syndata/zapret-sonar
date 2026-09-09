@@ -13,7 +13,7 @@ A Linux wrapper for [zapret](https://github.com/bol-van/zapret) v1 and [Flowseal
 ## Quick start
 
 ```bash
-git clone https://github.com/oxygen-syndata/zapret-sonar.git
+git clone https://github.com/zero-oxygen/zapret-sonar.git
 cd zapret-sonar
 sudo ./install.sh
 sudo sonar try --keep

@@ -7,6 +7,7 @@ TEST_DIR=$(mktemp -d)
 trap 'rm -rf "$TEST_DIR"' EXIT
 
 source "$PROJECT_DIR/lib/self-update.sh"
+[[ "$ZF_SELF_REPO" == zero-oxygen/zapret-sonar ]]
 make_tree() {
     local version="$1" root
     root="$TEST_DIR/zapret-sonar-v$version"

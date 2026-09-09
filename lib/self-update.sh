@@ -3,7 +3,7 @@
 [[ -n "${_ZF_SELF_UPDATE_SH:-}" ]] && return 0
 _ZF_SELF_UPDATE_SH=1
 
-ZF_SELF_REPO="${ZF_SELF_REPO:-oxygen-syndata/zapret-sonar}"
+ZF_SELF_REPO="${ZF_SELF_REPO:-zero-oxygen/zapret-sonar}"
 
 zf_self_validate_version() {
     [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
