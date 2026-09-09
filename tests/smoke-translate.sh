@@ -84,11 +84,39 @@ echo "PASS: trailing batch commands ignored"
 
 # Проверка referenced_files
 if zf_referenced_files | grep -q "list-general.txt"; then
-    echo "PASS: hostlist detected"
+echo "PASS: hostlist detected"
 else
     echo "FAIL: hostlist not detected"
     exit 1
 fi
+
+cat > "$BAT_DIR/general (CARET).bat" <<'BAT'
+@echo off
+"%BIN%winws.exe" --wf-tcp=443 --dpi-desync=fake --dpi-desync-fooling=badseq^^
+exit /b
+set AFTER_LITERAL_CARET=must-not-leak
+BAT
+if ! zf_translate "$BAT_DIR/general (CARET).bat" "$BIN_DIR" "$LISTS_DIR" off >/dev/null; then
+    echo "FAIL: escaped trailing caret fixture was not translated"
+    exit 1
+fi
+[[ "$ZF_OPT" == *'--dpi-desync-fooling=badseq^'* ]]
+[[ "$ZF_OPT" != *'exit'* && "$ZF_OPT" != *'AFTER_LITERAL_CARET'* ]]
+echo "PASS: escaped trailing caret is preserved"
+
+cat > "$BAT_DIR/general (TRIPLE CARET).bat" <<'BAT'
+@echo off
+"%BIN%winws.exe" --wf-tcp=443 --dpi-desync=fake --dpi-desync-fooling=badseq^^^
+  --new --dpi-desync=split2
+exit /b
+BAT
+if ! zf_translate "$BAT_DIR/general (TRIPLE CARET).bat" "$BIN_DIR" "$LISTS_DIR" off >/dev/null; then
+    echo "FAIL: triple trailing caret fixture was not translated"
+    exit 1
+fi
+[[ "$ZF_OPT" == *'--dpi-desync-fooling=badseq^ --new'* ]]
+[[ "$ZF_OPT" != *'^^'* && "$ZF_OPT" != *'exit'* ]]
+echo "PASS: odd trailing caret count preserves literals and continuation"
 
 echo ""
 echo "All smoke tests passed."

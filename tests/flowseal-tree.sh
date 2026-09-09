@@ -7,6 +7,8 @@ TEST_DIR=$(mktemp -d)
 trap 'rm -rf "$TEST_DIR"' EXIT
 
 source "$PROJECT_DIR/lib/flowseal.sh"
+# shellcheck source=../lib/zconfig.sh
+source "$PROJECT_DIR/lib/zconfig.sh"
 
 mkdir -p "$TEST_DIR/source/bin" "$TEST_DIR/source/lists" "$TEST_DIR/old"
 printf '@echo off\n"%%BIN%%winws.exe" --wf-tcp=443\n' > "$TEST_DIR/source/general (ALT1).bat"
@@ -28,6 +30,35 @@ zf_prepare_flowseal_tree "$TEST_DIR/source" "$TEST_DIR/stage" "$TEST_DIR/old"
 [[ -f "$TEST_DIR/stage/lists/ipset-exclude-user.txt" ]]
 
 printf 'PASS: Flowseal staging preserves user lists and ipset mode\n'
+
+for mode in any loaded; do
+    rm -rf "$TEST_DIR/stage-$mode" "$TEST_DIR/old-$mode"
+    mkdir -p "$TEST_DIR/old-$mode"
+    if [[ "$mode" == any ]]; then
+        : > "$TEST_DIR/old-$mode/ipset-all.txt"
+    else
+        printf '198.51.100.1/32\n' > "$TEST_DIR/old-$mode/ipset-all.txt"
+        printf '198.51.100.2/32\n' > "$TEST_DIR/old-$mode/ipset-all.txt.backup"
+    fi
+    zf_prepare_flowseal_tree "$TEST_DIR/source" "$TEST_DIR/stage-$mode" "$TEST_DIR/old-$mode"
+    if [[ "$mode" == any ]]; then
+        [[ ! -s "$TEST_DIR/stage-$mode/lists/ipset-all.txt" ]]
+    else
+        [[ "$(cat "$TEST_DIR/stage-$mode/lists/ipset-all.txt")" == $'203.0.113.5/32\n203.0.113.9/32' ]]
+    fi
+    [[ "$(cat "$TEST_DIR/stage-$mode/lists/ipset-all.txt.backup")" == $'203.0.113.5/32\n203.0.113.9/32' ]]
+done
+printf 'PASS: Flowseal staging keeps mode and refreshes the loaded IP list\n'
+
+export ZF_ZAPRET_CONFIG="$TEST_DIR/config"
+printf '# zapret-sonar-ipset: none\n' > "$ZF_ZAPRET_CONFIG"
+zf_set_ipset_mode "$TEST_DIR/stage/lists" any
+[[ "$(zf_ipset_mode "$TEST_DIR/stage/lists")" == any ]]
+[[ "$(zf_state ipset)" == any ]]
+zf_set_ipset_mode "$TEST_DIR/stage/lists" loaded
+[[ "$(zf_ipset_mode "$TEST_DIR/stage/lists")" == loaded ]]
+[[ "$(zf_state ipset)" == loaded ]]
+printf 'PASS: ipset changes atomically synchronize the config marker\n'
 
 mkdir -p "$TEST_DIR/releases"
 for release in old active failed extra; do

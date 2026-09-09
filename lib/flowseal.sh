@@ -37,16 +37,16 @@ zf_prepare_flowseal_tree() {
             install -m 644 "$file" "$ldir/" || return 1
         done
 
-        if [[ -f "$old_lists/ipset-all.txt" ]]; then
+        if [[ -f "$old_lists/ipset-all.txt" && -f "$src/lists/ipset-all.txt" ]]; then
             if [[ ! -s "$old_lists/ipset-all.txt" ]]; then
                 : > "$ldir/ipset-all.txt"
-                [[ -f "$src/lists/ipset-all.txt" ]] && install -m 644 "$src/lists/ipset-all.txt" "$ldir/ipset-all.txt.backup"
+                install -m 644 "$src/lists/ipset-all.txt" "$ldir/ipset-all.txt.backup"
             elif tr -d '\r' < "$old_lists/ipset-all.txt" | grep -qxF '203.0.113.113/32'; then
                 printf '203.0.113.113/32\n' > "$ldir/ipset-all.txt"
-                [[ -f "$src/lists/ipset-all.txt" ]] && install -m 644 "$src/lists/ipset-all.txt" "$ldir/ipset-all.txt.backup"
+                install -m 644 "$src/lists/ipset-all.txt" "$ldir/ipset-all.txt.backup"
             else
-                install -m 644 "$old_lists/ipset-all.txt" "$ldir/ipset-all.txt"
-                [[ -f "$old_lists/ipset-all.txt.backup" ]] && install -m 644 "$old_lists/ipset-all.txt.backup" "$ldir/ipset-all.txt.backup"
+                install -m 644 "$src/lists/ipset-all.txt" "$ldir/ipset-all.txt"
+                install -m 644 "$src/lists/ipset-all.txt" "$ldir/ipset-all.txt.backup"
             fi
         fi
     fi
@@ -63,8 +63,15 @@ zf_activate_flowseal_tree() {
 
     mkdir -p "$(dirname "$release")" || return 1
     mv "$stage" "$release" || return 1
-    ln -s ".flowseal-releases/$(basename "$release")" "$link_tmp" || return 1
-    mv -Tf "$link_tmp" "$current" || { rm -f "$link_tmp"; return 1; }
+    if ! ln -s ".flowseal-releases/$(basename "$release")" "$link_tmp"; then
+        mv "$release" "$stage" 2>/dev/null || true
+        return 1
+    fi
+    if ! mv -Tf "$link_tmp" "$current"; then
+        rm -f "$link_tmp"
+        mv "$release" "$stage" 2>/dev/null || true
+        return 1
+    fi
 }
 
 zf_restore_flowseal_tree() {

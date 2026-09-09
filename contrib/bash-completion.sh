@@ -8,18 +8,17 @@ _sonar_completion() {
 
     if (( COMP_CWORD == 1 )); then
         # shellcheck disable=SC2207
-        COMPREPLY=( $(compgen -W "list use status check try baseline update upgrade uninstall gamefilter ipset site start stop restart enable disable log help --version --help --debug" -- "$cur") )
+        COMPREPLY=( $(compgen -W "list use status check doctor try baseline update upgrade uninstall gamefilter ipset site start stop restart enable disable log help --version --help --debug" -- "$cur") )
         return 0
     fi
 
     case "$prev" in
         use)
-            local strategies
-            strategies=$(/usr/local/bin/sonar _list 2>/dev/null)
-            if [[ -n "$strategies" ]]; then
-                # shellcheck disable=SC2207
-                COMPREPLY=( $(compgen -W "$strategies" -- "$cur") )
-            fi
+            local strategy
+            COMPREPLY=()
+            while IFS= read -r strategy; do
+                [[ "$strategy" == "$cur"* ]] && COMPREPLY+=("$strategy")
+            done < <(command sonar _list 2>/dev/null)
             return 0 ;;
         gamefilter)
             # shellcheck disable=SC2207
@@ -37,6 +36,10 @@ _sonar_completion() {
             # shellcheck disable=SC2207
             COMPREPLY=( $(compgen -W "--force" -- "$cur") )
             return 0 ;;
+        status|check)
+            # shellcheck disable=SC2207
+            COMPREPLY=( $(compgen -W "--json" -- "$cur") )
+            return 0 ;;
         site)
             # shellcheck disable=SC2207
             COMPREPLY=( $(compgen -W "--list --remove" -- "$cur") )
@@ -45,7 +48,7 @@ _sonar_completion() {
 
     if [[ "${COMP_WORDS[1]}" == "help" ]]; then
         # shellcheck disable=SC2207
-        COMPREPLY=( $(compgen -W "list use status check try baseline update upgrade uninstall gamefilter ipset site start stop restart enable disable" -- "$cur") )
+        COMPREPLY=( $(compgen -W "list use status check doctor try baseline update upgrade uninstall gamefilter ipset site start stop restart enable disable log" -- "$cur") )
         return 0
     fi
 }

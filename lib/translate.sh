@@ -68,8 +68,14 @@ zf_translate() {
     c=$(tr -d '\r' < "$bat" | awk '
         !found && /winws\.exe/ { found=1 }
         found {
-            print
-            if ($0 !~ /\^[[:space:]]*$/) exit
+            line=$0
+            sub(/[[:space:]]*$/, "", line)
+            carets=0
+            while (line ~ /\^$/) { carets++; sub(/\^$/, "", line) }
+            literals=""
+            for (i=0; i<int(carets/2); i++) literals=literals "__ZF_LITERAL_CARET__"
+            print line literals
+            if (carets % 2 == 0) exit
         }
     ')
     [[ -n "$c" ]] || { printf 'translate: не найден вызов winws.exe в %s\n' "$bat" >&2; return 1; }
@@ -79,8 +85,8 @@ zf_translate() {
     # аргументе и nfqws упадёт с "could not read ^!".
     c="${c//^!/!}"
 
-    # Склейка продолжений строк: "^" в конце строки + перевод строки → пробел.
-    c=$(printf '%s\n' "$c" | sed -E ':a; s/\^[[:space:]]*$//; ta' | tr '\n' ' ')
+    c=$(printf '%s\n' "$c" | tr '\n' ' ')
+    c="${c//__ZF_LITERAL_CARET__/^}"
 
     # Отрезаем всё до самого winws.exe (включая путь и закрывающую кавычку).
     c="${c#*winws.exe\"}"

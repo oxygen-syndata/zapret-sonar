@@ -37,6 +37,28 @@ zf_state() {
     sed -n "s|^${mark} ||p" "$ZF_ZAPRET_CONFIG" | head -1
 }
 
+zf_write_state_marker() {
+    local key="$1" value="$2" mark tmp
+    case "$key" in
+        strategy)   mark="$ZF_MARK_STRATEGY" ;;
+        gamefilter) mark="$ZF_MARK_GAMEFILTER" ;;
+        ipset)      mark="$ZF_MARK_IPSET" ;;
+        *) return 1 ;;
+    esac
+    [[ -f "$ZF_ZAPRET_CONFIG" ]] || return 0
+    tmp=$(mktemp "${ZF_ZAPRET_CONFIG}.marker.XXXXXX") || return 1
+    if grep -q "^${mark} " "$ZF_ZAPRET_CONFIG"; then
+        sed "s|^${mark} .*|${mark} ${value}|" "$ZF_ZAPRET_CONFIG" > "$tmp" || { rm -f "$tmp"; return 1; }
+    else
+        cp -a "$ZF_ZAPRET_CONFIG" "$tmp" || { rm -f "$tmp"; return 1; }
+        printf '%s %s\n' "$mark" "$value" >> "$tmp" || { rm -f "$tmp"; return 1; }
+    fi
+    bash -n "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
+    chmod --reference="$ZF_ZAPRET_CONFIG" "$tmp" 2>/dev/null || chmod 644 "$tmp" || { rm -f "$tmp"; return 1; }
+    chown --reference="$ZF_ZAPRET_CONFIG" "$tmp" 2>/dev/null || true
+    mv -f "$tmp" "$ZF_ZAPRET_CONFIG"
+}
+
 # --- Генерация конфига -------------------------------------------------------
 # zf_write_config STRATEGY_NAME GAMEFILTER IPSET_MODE
 # Требует заранее заполненных ZF_OPT / ZF_PORTS_* (см. zf_translate).
@@ -137,23 +159,34 @@ zf_set_ipset_mode() {
     local lists_dir="$1" mode="$2"
     local f="$lists_dir/ipset-all.txt" b="$lists_dir/ipset-all.txt.backup"
     local cur; cur=$(zf_ipset_mode "$lists_dir")
-    [[ "$cur" == "$mode" ]] && return 0
+    [[ "$cur" == "$mode" ]] && { zf_write_state_marker ipset "$mode"; return; }
 
     # Полный список нельзя потерять: перед уходом из loaded сохраняем его.
     if [[ "$cur" == "loaded" && ! -f "$b" ]]; then
         cp -a "$f" "$b" || return 1
     fi
 
+    local tmp previous
+    tmp=$(mktemp "$lists_dir/.ipset-all.XXXXXX") || return 1
+    previous=$(mktemp "$lists_dir/.ipset-previous.XXXXXX") || { rm -f "$tmp"; return 1; }
+    cp -a "$f" "$previous" || { rm -f "$tmp" "$previous"; return 1; }
     case "$mode" in
-        none) printf '%s\n' "$ZF_IPSET_STUB" > "$f" ;;
-        any)  : > "$f" ;;
+        none) printf '%s\n' "$ZF_IPSET_STUB" > "$tmp" || { rm -f "$tmp" "$previous"; return 1; } ;;
+        any)  : > "$tmp" ;;
         loaded)
             if [[ ! -f "$b" ]]; then
                 printf 'zconfig: нет ipset-all.txt.backup — восстановить список нечем\n' >&2
+                rm -f "$tmp" "$previous"
                 return 1
             fi
-            cp -a "$b" "$f" || return 1 ;;
-        *) printf 'zconfig: неизвестный режим ipset: %s\n' "$mode" >&2; return 1 ;;
+            cp -a "$b" "$tmp" || { rm -f "$tmp" "$previous"; return 1; } ;;
+        *) rm -f "$tmp" "$previous"; printf 'zconfig: неизвестный режим ipset: %s\n' "$mode" >&2; return 1 ;;
     esac
-    return 0
+    chmod 644 "$tmp" || { rm -f "$tmp" "$previous"; return 1; }
+    mv -f "$tmp" "$f" || { rm -f "$tmp" "$previous"; return 1; }
+    if ! zf_write_state_marker ipset "$mode"; then
+        mv -f "$previous" "$f" || true
+        return 1
+    fi
+    rm -f "$previous"
 }

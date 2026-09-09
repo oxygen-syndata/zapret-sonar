@@ -32,6 +32,7 @@ On servers and remote hosts, `try` temporarily stops and repeatedly restarts the
 - Not an independent strategy collection: strategies and lists come from Flowseal.
 - Results depend on the provider, blocking method, and protocol.
 - Do not install it over another zapret deployment: processes and NFQUEUE rules will conflict.
+- To explicitly migrate a plain zapret v1 deployment, use `sudo env MIGRATE_ZAPRET=1 ./install.sh`; otherwise the installer stops.
 - `sonar check` tests specific HTTP/CDN targets. Success does not prove that Discord Voice, QUIC, YouTube video, or zapret itself is working.
 
 ## If it does not work
@@ -60,6 +61,8 @@ Also check:
 - `unzip` only for the Flowseal branch fallback;
 - fzf for the optional TUI;
 - git for the installation method shown above.
+
+Bash completion: `source contrib/bash-completion.sh` or install the file system-wide as `/etc/bash_completion.d/zapret-sonar`.
 
 Tested on CachyOS (Arch, x86_64) and Ubuntu Server 26.04 LTS (x86_64). Other distributions with a compatible GNU userspace may work but are not in the tested matrix yet.
 
@@ -139,15 +142,15 @@ Flowseal .bat -> translate.sh -> NFQWS_OPT -> nfqws --dry-run -> config -> syste
 2. The result is checked for shell metacharacters because the config is sourced as root.
 3. `nfqws --dry-run` validates arguments and referenced files before the config changes.
 4. The config is written atomically and stores the selected strategy and modes.
-5. The service is restarted only after successful validation.
+5. The service is restarted only after successful validation; the previous config and service state are restored on failure.
 
 ## Updates and recovery
 
 - A Flowseal tree is assembled in staging and activated as a whole through the `flowseal-current` symlink.
 - The version is committed and old snapshots are removed only after the active strategy has been applied successfully.
-- On failure, the previous tree is restored, config and service are verified again, and the failed snapshot is removed.
+- On failure, the previous tree is restored, config and service are verified again, and incomplete recovery is reported explicitly.
 - Reinstallation rebuilds a legacy config with the new paths before deleting old directories.
-- The installer and engine updater create backups and restore the previous state on failure; rollback failures are reported explicitly.
+- The installer and engine updater create backups and restore the previous state on failure; a service that was stopped before an engine update remains stopped.
 - The background update check stores its user cache in `${XDG_CACHE_HOME:-~/.cache}/zapret-sonar`; mutating operations use a root-owned lock under `/run/zapret-sonar`.
 
 ## Security

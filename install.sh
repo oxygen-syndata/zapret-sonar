@@ -26,6 +26,7 @@ FLOWSEAL_VER="${FLOWSEAL_VER:-1.10.2}"
 ZAPRET_BASE="${ZAPRET_BASE:-/opt/zapret}"
 BIN_DEST="${BIN_DEST:-/usr/local/bin}"
 SERVICE_NAME="${SERVICE_NAME:-zapret}"
+MIGRATE_ZAPRET="${MIGRATE_ZAPRET:-0}"
 
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STAGING=""
@@ -126,7 +127,8 @@ detect_occupant() {
     for f in conf.env zapret-ctl service.sh update-strategies; do
         [[ -e "$ZAPRET_BASE/$f" ]] && { printf 'zapret-ng\n'; return 0; }
     done
-    # Наша же прошлая установка: есть init.d от zapret v1.
+    [[ -f "$ZAPRET_BASE/zapret-sonar/lib/install.conf" || -f "$ZAPRET_BASE/zapret-sonar/lib/paths.sh" ]] \
+        && { printf 'zapret-sonar\n'; return 0; }
     [[ -f "$ZAPRET_BASE/init.d/sysv/functions" ]] && { printf 'zapret\n'; return 0; }
     [[ -d "$ZAPRET_BASE" ]] && [[ -n "$(ls -A "$ZAPRET_BASE" 2>/dev/null)" ]] && { printf 'unknown\n'; return 0; }
     printf 'none\n'
@@ -142,10 +144,11 @@ unit_is_foreign() {
 
 preflight() {
     [[ $EUID -eq 0 ]] || die "запускать от root: sudo ./install.sh"
+    (( BASH_VERSINFO[0] >= 4 )) || die "нужен bash 4 или новее"
 
     local missing=()
     local c
-    for c in curl tar sha256sum systemctl; do
+    for c in curl tar sha256sum systemctl flock stat install find grep sed readlink sort head wc mktemp; do
         command -v "$c" >/dev/null 2>&1 || missing+=("$c")
     done
     (( ${#missing[@]} == 0 )) || die "не хватает утилит: ${missing[*]}"
@@ -166,7 +169,15 @@ preflight() {
     # Занятый каталог и чужой юнит — повод остановиться, а не «доустановить».
     local occ; occ=$(detect_occupant)
     case "$occ" in
-        none|zapret) ;;
+        none|zapret-sonar) ;;
+        zapret)
+            if [[ "$MIGRATE_ZAPRET" != 1 ]]; then
+                printf '\nВ %s установлена обычная zapret v1, не управляемая zapret-sonar.\n' "$ZAPRET_BASE" >&2
+                printf 'Для осознанной миграции повторите с MIGRATE_ZAPRET=1.\n' >&2
+                die "каталог занят: zapret v1"
+            fi
+            info "включена явная миграция существующей zapret v1"
+            ;;
         zapret-ng)
             printf '\nВ %s установлен zapret-ng (другой проект).\n' "$ZAPRET_BASE" >&2
             printf 'Копирование поверх дало бы смесь двух проектов.\n' >&2
@@ -223,7 +234,7 @@ fetch_zapret() {
     for name in nfqws ip2net mdig; do
         binary="$root/binaries/$arch/$name"
         [[ -f "$binary" ]] || die "в релизе нет бинарника для $arch/$name"
-        grep -q "binaries/$arch/$name" "$STAGING/sha256sum.txt" \
+        grep -Eq "^[[:xdigit:]]{64}[[:space:]]+\\*?zapret-${ZAPRET_VER}/binaries/${arch}/${name}$" "$STAGING/sha256sum.txt" \
             || die "в sha256sum.txt нет записи для $arch/$name — целостность не подтверждена"
         info "$name $arch: sha256 подтверждён"
     done
@@ -318,6 +329,12 @@ install_flow() {
 # (нужно для тестирования и нестандартных конфигураций).
 ZF_ZAPRET_BASE="\${ZF_ZAPRET_BASE:-$ZAPRET_BASE}"
 ZF_SERVICE="\${ZF_SERVICE:-$SERVICE_NAME}"
+ZF_BIN_DEST="\${ZF_BIN_DEST:-$BIN_DEST}"
+EOF
+    cat > "$dest/lib/install.conf" <<EOF
+ZAPRET_BASE=$ZAPRET_BASE
+SERVICE_NAME=$SERVICE_NAME
+BIN_DEST=$BIN_DEST
 EOF
     chmod 644 "$dest/lib/paths.sh"
 
@@ -370,7 +387,10 @@ rebuild_existing_config() {
     gamefilter=$(sed -n 's/^# zapret-sonar-gamefilter: //p' "$ZAPRET_BASE/config" | head -1)
     ipset=$(sed -n 's/^# zapret-sonar-ipset: //p' "$ZAPRET_BASE/config" | head -1)
     gamefilter="${gamefilter:-off}"
-    ipset="${ipset:-none}"
+    if [[ -z "$ipset" ]]; then
+        ipset=$(zf_ipset_mode "$ZAPRET_BASE/flowseal-current/lists")
+        [[ "$ipset" != unknown ]] || ipset=none
+    fi
 
     log "Пересборка существующего конфига"
     if ! ZF_LOCK_HELD=1 "$cli" _render "$strategy" "$gamefilter" "$ipset"; then

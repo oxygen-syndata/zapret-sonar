@@ -199,7 +199,7 @@ action_upgrade() {
     local a; read -r a
     [[ "$a" =~ ^[yYдД]$ ]] || return 0
     printf '\n'
-    sudo "$CLI" upgrade
+    "$CLI" upgrade
     pause
 }
 

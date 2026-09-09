@@ -58,3 +58,12 @@ for attempt in 1 2; do
 done
 
 printf 'PASS: repeated failed updates preserve the old release and version\n'
+
+zf_restore_flowseal_tree() { return 1; }
+if output=$(cmd_update --force 2>&1); then
+    printf 'FAIL: update with failed rollback reported success\n' >&2
+    exit 1
+fi
+[[ "$output" == *'автоматический откат набора Flowseal не удался'* ]]
+[[ "$(cat "$ZF_ZAPRET_BASE/.flowseal-version")" == old ]]
+printf 'PASS: failed Flowseal rollback is reported explicitly\n'

@@ -46,9 +46,17 @@ _zf_do_update_check() { :; }
 printf 'PASS: malicious cache timestamp is not evaluated\n'
 
 printf '1.10.3\n' > "$ZF_ZAPRET_BASE/.flowseal-version"
-[[ "$(_zf_update_status)" == 'стратегии 1.10.2 (у вас 1.10.3)' ]]
+[[ "$(_zf_update_status)" == 'актуально' ]]
 printf '1.10.2\n' > "$ZF_ZAPRET_BASE/.flowseal-version"
-printf 'PASS: cached remote versions use current local state\n'
+printf 'PASS: cached remote versions do not downgrade newer local state\n'
+
+[[ "$(_zf_version_is_newer 1.10.3 main && printf yes || printf no)" == yes ]]
+[[ "$(_zf_version_is_newer 1.10.3 1.10.2 && printf yes || printf no)" == yes ]]
+[[ "$(_zf_version_is_newer 1.10.2 1.10.3 && printf yes || printf no)" == no ]]
+[[ "$(_zf_version_is_newer 1.10.3 1.10.3-beta && printf yes || printf no)" == yes ]]
+[[ "$(_zf_version_is_newer 1.10.3-beta 1.10.3 && printf yes || printf no)" == no ]]
+[[ "$(_zf_version_is_newer 1.10.3-rc1 1.10.3-beta2 && printf yes || printf no)" == no ]]
+printf 'PASS: release versions supersede fallback state without downgrades\n'
 
 escaped=$(_zf_json_escape $'a\tb\rc\001d')
 [[ "$escaped" == 'a\tb\rc\u0001d' ]]

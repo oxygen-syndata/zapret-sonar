@@ -13,7 +13,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: ShellCheck
-        uses: ludeeus/action-shellcheck@master
+        uses: ludeeus/action-shellcheck@00b27aa7cb85167568cb48a3838b75f4265f2bca
         with:
           severity: warning
           ignore_paths: ./lib/paths.sh
@@ -27,7 +27,7 @@ jobs:
 
       - name: Check bash syntax
         run: |
-          for f in zapret-sonar zapret-sonar-tui install.sh lib/*.sh; do
+          for f in zapret-sonar zapret-sonar-tui install.sh lib/*.sh contrib/*.sh tests/*.sh; do
             echo ":: Checking $f"
             bash -n "$f" || exit 1
           done
@@ -48,6 +48,15 @@ jobs:
 
       - name: Test update transaction
         run: bash tests/update-transaction.sh
+
+      - name: Test apply lifecycle
+        run: bash tests/apply-lifecycle.sh
+
+      - name: Test engine upgrade
+        run: bash tests/engine-upgrade.sh
+
+      - name: Test artifact validation
+        run: bash tests/artifact-validation.sh
 
       - name: Test reinstall migration
         run: bash tests/install-migration.sh
