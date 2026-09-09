@@ -501,7 +501,7 @@ cmd_use() {
 # состояния сервиса. Обычное применение выполняет restart после неё.
 cmd_render() {
     local name="$1" gf="$2" ipset="$3"
-    [[ $EUID -eq 0 ]] || { printf 'ошибка: _render требует root\n' >&2; return 1; }
+    _zf_require_root _render
     _zf_lock
     zf_translate "$ZF_STRATEGIES_DIR/$name" "$ZF_BIN_DIR" "$ZF_LISTS_DIR" "$gf" || return 1
     zf_verify "$ZF_NFQWS" || { printf 'ошибка: nfqws отверг аргументы\n' >&2; return 1; }
