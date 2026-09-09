@@ -56,7 +56,16 @@ systemctl() {
     esac
 }
 cmd_apply() { return 99; }
-cmd_render() { [[ "$(readlink "$ZF_FLOWSEAL_CURRENT")" == .flowseal-releases/old ]]; }
+render_count=0
+cmd_render() {
+    render_count=$((render_count + 1))
+    if (( render_count == 1 )); then
+        [[ "$(readlink "$ZF_FLOWSEAL_CURRENT")" == .flowseal-releases/old ]]
+    else
+        [[ "$(readlink "$ZF_FLOWSEAL_CURRENT")" == .flowseal-releases/current ]]
+    fi
+}
+zf_set_ipset_mode() { return 0; }
 cmd_rollback old >/dev/null
 [[ "$service_state" == inactive ]]
 printf 'PASS: Flowseal rollback preserves an inactive service\n'
