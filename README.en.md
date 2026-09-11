@@ -170,7 +170,7 @@ If Flowseal is temporarily unavailable, the active tree keeps working. List reta
 - The executable shell config is generated only from sanitized strategy data.
 - zapret binaries are verified against the upstream release `sha256sum.txt`.
 - Self-update uses a dedicated release archive and `SHA256SUMS`, validating structure and syntax before an atomic version switch.
-- The release asset is built reproducibly only after the exact tag commit passes the test suite; the normal workflow does not overwrite published assets.
+- The release asset is built reproducibly only after the exact tag commit passes the test suite. The workflow creates a draft release; after its Russian-first notes are reviewed, it is published manually and makes its tag and assets immutable.
 - Flowseal does not publish a checksum file; its archive is fetched over TLS and validated structurally.
 - All operations that mutate config, lists, snapshots, binaries, or service state use one root-owned lock.
 

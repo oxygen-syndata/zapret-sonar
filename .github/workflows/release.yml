@@ -1,11 +1,11 @@
-name: Release assets
+name: Prepare release draft
 
 on:
   push:
     tags: ['v*']
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -81,7 +81,7 @@ jobs:
       - name: Test pinned upstream releases
         run: bash tests/flowseal-release.sh
 
-  publish:
+  draft:
     needs: [verify, upstream-integration]
     runs-on: ubuntu-latest
     permissions:
@@ -93,7 +93,7 @@ jobs:
           name: release-${{ github.ref_name }}
           path: dist
 
-      - name: Verify assets, tag, and publish release
+      - name: Verify assets, tag, and prepare draft release
         env:
           EXPECTED_COMMIT: ${{ needs.verify.outputs.commit }}
           EXPECTED_SHA256: ${{ needs.verify.outputs.asset_sha256 }}
@@ -109,5 +109,23 @@ jobs:
             remote=$(git ls-remote "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "refs/tags/$GITHUB_REF_NAME" | cut -f1)
           fi
           test "$remote" = "$EXPECTED_COMMIT"
-          gh release create "$GITHUB_REF_NAME" "$asset" "$sums" --verify-tag --generate-notes \
-            --target "$EXPECTED_COMMIT" --title "$GITHUB_REF_NAME"
+          release=$(gh release view "$GITHUB_REF_NAME" --json isDraft,targetCommitish 2>/dev/null || true)
+          if [[ -z "$release" ]]; then
+            gh release create "$GITHUB_REF_NAME" --draft --verify-tag --generate-notes \
+              --target "$EXPECTED_COMMIT" --title "$GITHUB_REF_NAME"
+          else
+            jq -e --arg commit "$EXPECTED_COMMIT" '.isDraft and .targetCommitish == $commit' <<< "$release" >/dev/null
+          fi
+          for file in "$asset" "$sums"; do
+            name=$(basename "$file")
+            expected="sha256:$(sha256sum "$file" | cut -d' ' -f1)"
+            actual=$(gh release view "$GITHUB_REF_NAME" --json assets \
+              --jq ".assets[] | select(.name == \"$name\") | .digest")
+            if [[ -z "$actual" ]]; then
+              gh release upload "$GITHUB_REF_NAME" "$file"
+            else
+              test "$actual" = "$expected"
+            fi
+          done
+          test "$(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets | map(.name) | sort | join("\n")')" \
+            = "$(printf 'SHA256SUMS\nzapret-sonar-%s.tar.gz' "$GITHUB_REF_NAME")"
