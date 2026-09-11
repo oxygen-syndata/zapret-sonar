@@ -1084,6 +1084,8 @@ cmd_update() {
             || die "не удалось записать metadata предыдущего Flowseal release"
     fi
     local update_pending=0 update_committed=0 cur_strat="" gf="off" ips="none"
+    # Signal traps pass the optional signal name.
+    # shellcheck disable=SC2120
     _zf_update_rollback() {
         local signal="${1:-}"
         local restore_ok=1
@@ -1231,6 +1233,8 @@ cmd_rollback() {
         install -m 644 "$user_file" "$target/lists/$name" || die "не удалось перенести пользовательский список"
     done
     zf_set_ipset_mode "$target/lists" "$ips" 0 || die "не удалось перенести режим ipset"
+    # Signal traps pass the optional signal name.
+    # shellcheck disable=SC2120
     _zf_rollback_restore_original() {
         local restore_ok=1 signal="${1:-}"
         trap - INT TERM HUP
