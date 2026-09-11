@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if (( EUID != 0 )) && command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+    exec sudo -n -- bash "$0"
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 TEST_DIR=$(mktemp -d)
@@ -12,7 +16,7 @@ export BIN_DEST="$TEST_DIR/bin-dest"
 export SERVICE_NAME=zapret-test
 export ZF_RUNTIME_DIR="$TEST_DIR/run"
 mkdir -p "$ZAPRET_BASE/flowseal-strategies" "$ZAPRET_BASE/flowseal-bin" \
-    "$ZAPRET_BASE/flowseal-lists" "$ZAPRET_BASE/zapret-sonar" "$BIN_DEST" "$ZF_RUNTIME_DIR"
+    "$ZAPRET_BASE/flowseal-lists" "$ZAPRET_BASE/zapret-sonar" "$ZAPRET_BASE/nfq" "$BIN_DEST" "$ZF_RUNTIME_DIR"
 printf '# zapret-sonar-strategy: general.bat\n# zapret-sonar-gamefilter: off\n# zapret-sonar-ipset: none\nNFQWS_OPT="--hostlist=%s/flowseal-lists/list-general.txt"\n' \
     "$ZAPRET_BASE" > "$ZAPRET_BASE/config"
 printf 'user.example\n' > "$ZAPRET_BASE/flowseal-lists/list-general-user.txt"
@@ -21,6 +25,12 @@ mkdir -p "$TEST_DIR/source/bin" "$TEST_DIR/source/lists"
 printf '@echo off\n"%%BIN%%winws.exe" --wf-tcp=443 --dpi-desync=fake\n' > "$TEST_DIR/source/general.bat"
 : > "$TEST_DIR/source/bin/fake.bin"
 printf '203.0.113.113/32\n' > "$TEST_DIR/source/lists/ipset-all.txt"
+cat > "$ZAPRET_BASE/nfq/nfqws" <<EOF
+#!/usr/bin/env bash
+printf 'called\n' > "$TEST_DIR/nfqws-called"
+exit 1
+EOF
+chmod +x "$ZAPRET_BASE/nfq/nfqws"
 
 # shellcheck source=../install.sh
 source "$PROJECT_DIR/install.sh"
@@ -29,6 +39,22 @@ acquire_install_lock
 install_flowseal "$TEST_DIR/source"
 [[ -d "$ZAPRET_BASE/flowseal-lists" ]]
 
+cat > "$ZAPRET_BASE/zapret-sonar/zapret-sonar" <<EOF
+#!/usr/bin/env bash
+exec env ZF_ZAPRET_BASE="$ZAPRET_BASE" ZF_RUNTIME_DIR="$ZF_RUNTIME_DIR" \\
+    "$PROJECT_DIR/zapret-sonar" "\$@"
+EOF
+chmod +x "$ZAPRET_BASE/zapret-sonar/zapret-sonar"
+if ( rebuild_existing_config ) >/dev/null 2>&1; then
+    printf 'FAIL: installer accepted a failed real _render process\n' >&2
+    exit 1
+fi
+[[ -d "$ZAPRET_BASE/flowseal-lists" ]]
+[[ ! -e "$ZAPRET_BASE/flowseal-current" ]]
+(( EUID != 0 )) || [[ -f "$TEST_DIR/nfqws-called" ]]
+printf 'PASS: failed real _render preserves legacy directories\n'
+
+install_flowseal "$TEST_DIR/source"
 cat > "$ZAPRET_BASE/zapret-sonar/zapret-sonar" <<'EOF'
 #!/usr/bin/env bash
 set -eu
@@ -91,8 +117,8 @@ SERVICE_NAME=zapret-layout
 install_flow
 [[ -x "$ZAPRET_BASE/zapret-sonar/zapret-sonar" ]]
 [[ -x "$ZAPRET_BASE/zapret-sonar/zapret-sonar-tui" ]]
-[[ "$(readlink "$ZAPRET_BASE/zapret-sonar/current")" == releases/1.3.1 ]]
-[[ -f "$ZAPRET_BASE/zapret-sonar/releases/1.3.1/RELEASE" ]]
+[[ "$(readlink "$ZAPRET_BASE/zapret-sonar/current")" == releases/1.3.2 ]]
+[[ -f "$ZAPRET_BASE/zapret-sonar/releases/1.3.2/RELEASE" ]]
 grep -Fq 'ZF_BIN_DEST="${ZF_BIN_DEST:-'"$BIN_DEST"'}"' "$ZAPRET_BASE/zapret-sonar/lib/paths.sh"
 [[ "$(readlink -f "$BIN_DEST/sonar")" == "$ZAPRET_BASE/zapret-sonar/zapret-sonar" ]]
 grep -Fq -- '--install-root "$root"' "$ZAPRET_BASE/zapret-sonar/zapret-sonar"

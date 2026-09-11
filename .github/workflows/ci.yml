@@ -6,11 +6,16 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   shellcheck:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: ShellCheck
         uses: ludeeus/action-shellcheck@00b27aa7cb85167568cb48a3838b75f4265f2bca
@@ -23,7 +28,9 @@ jobs:
   bash-syntax:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Check bash syntax
         run: |
@@ -35,55 +42,17 @@ jobs:
   smoke-test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
-      - name: Run smoke test
-        run: bash tests/smoke-translate.sh
-
-      - name: Test Flowseal staging
-        run: bash tests/flowseal-tree.sh
-
-      - name: Test runtime safety
-        run: bash tests/runtime-safety.sh
-
-      - name: Test update transaction
-        run: bash tests/update-transaction.sh
-
-      - name: Test apply lifecycle
-        run: bash tests/apply-lifecycle.sh
-
-      - name: Test engine upgrade
-        run: bash tests/engine-upgrade.sh
-
-      - name: Test artifact validation
-        run: bash tests/artifact-validation.sh
-
-      - name: Test JSON contracts
-        run: bash tests/json-contracts.sh
-
-      - name: Test diagnostic export
-        run: bash tests/diagnostic-export.sh
-
-      - name: Test strategy validation
-        run: bash tests/validate.sh
-
-      - name: Test self-update primitives
-        run: bash tests/self-update.sh
-
-      - name: Test self-update command
-        run: bash tests/self-update-command.sh
-
-      - name: Test Flowseal rollback
-        run: bash tests/flowseal-rollback.sh
-
-      - name: Test installer CLI
-        run: bash tests/installer-cli.sh
-
-      - name: Test reinstall migration
-        run: bash tests/install-migration.sh
-
-      - name: Test pinned Flowseal release
-        run: bash tests/flowseal-release.sh
+      - name: Run regression and integration tests
+        run: |
+          for test in tests/*.sh; do
+            bash "$test" || exit 1
+          done
 
       - name: Build release asset
-        run: bash scripts/build-release.sh dist
+        run: |
+          bash scripts/build-release.sh dist
+          (cd dist && sha256sum -c SHA256SUMS)

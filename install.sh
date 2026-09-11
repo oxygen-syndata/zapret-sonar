@@ -4,8 +4,8 @@
 #
 # Ставит три вещи:
 #   1. zapret v1 (bol-van) в /opt/zapret — он делает firewall, systemd, демона;
-#   2. стратегии, .bin-фейки и списки Flowseal рядом, в flowseal-*;
-#   3. сам zapret-sonar в /usr/local/bin.
+#   2. versioned-набор стратегий, .bin-фейков и списков Flowseal в /opt/zapret;
+#   3. versioned runtime zapret-sonar в /opt/zapret и симлинки в /usr/local/bin.
 #
 # Принципы:
 #   • Всё скачивается в staging и заменяется только после проверки — сбой

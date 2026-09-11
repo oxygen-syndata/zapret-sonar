@@ -91,6 +91,8 @@ Tested on CachyOS (Arch, x86_64) and Ubuntu Server 26.04 LTS (x86_64). Other dis
 
 `PASS` means that a specific check succeeded, `FAIL` means it failed, and `SKIP` means that the target could not produce a meaningful result. Skipped checks are not counted as passed.
 
+The process exit status matches the command result: `0` means success and a non-zero status means a failed check or operation. JSON commands preserve this contract and are safe to use in monitoring and automation.
+
 ### Configuration
 
 | Command | Purpose |
@@ -160,7 +162,7 @@ Flowseal .bat -> translate.sh -> NFQWS_OPT -> nfqws --dry-run -> config -> syste
 - The installer and engine updater create backups and restore the previous state on failure; a service that was stopped before an engine update remains stopped.
 - The background update check stores its user cache in `${XDG_CACHE_HOME:-~/.cache}/zapret-sonar`; mutating operations use a root-owned lock under `/run/zapret-sonar`.
 
-If Flowseal is temporarily unavailable, the active tree keeps working. List retained versions with `sonar snapshots` and switch with `sudo sonar rollback [snapshot]`. To recover zapret-sonar itself, reinstall the required GitHub Release through `install.sh`; the installer preserves the source checkout and active service config.
+If Flowseal is temporarily unavailable, the active tree keeps working. List retained versions with `sonar snapshots` and switch with `sudo sonar rollback [snapshot]`. For a full zapret-sonar reinstall, use a checkout or source archive of the required GitHub tag and run `install.sh`; the `zapret-sonar-v*.tar.gz` runtime asset is for `sonar self-update` and does not contain the installer. The installer preserves the active service config.
 
 ## Security
 
@@ -168,6 +170,7 @@ If Flowseal is temporarily unavailable, the active tree keeps working. List reta
 - The executable shell config is generated only from sanitized strategy data.
 - zapret binaries are verified against the upstream release `sha256sum.txt`.
 - Self-update uses a dedicated release archive and `SHA256SUMS`, validating structure and syntax before an atomic version switch.
+- The release asset is built reproducibly only after the exact tag commit passes the test suite; the normal workflow does not overwrite published assets.
 - Flowseal does not publish a checksum file; its archive is fetched over TLS and validated structurally.
 - All operations that mutate config, lists, snapshots, binaries, or service state use one root-owned lock.
 

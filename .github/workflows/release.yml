@@ -1,22 +1,113 @@
 name: Release assets
 
 on:
-  release:
-    types: [published]
+  push:
+    tags: ['v*']
 
-permissions:
-  contents: write
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  assets:
+  verify:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      commit: ${{ steps.source.outputs.commit }}
+      asset_sha256: ${{ steps.assets.outputs.sha256 }}
     steps:
-      - uses: actions/checkout@v4
-      - name: Verify release version
-        run: test "v$(sed -n 's/^version=//p' RELEASE)" = "$GITHUB_REF_NAME"
-      - name: Build release assets
-        run: bash scripts/build-release.sh dist
-      - name: Upload release assets
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify release source
+        id: source
+        run: |
+          test "v$(sed -n 's/^version=//p' RELEASE)" = "$GITHUB_REF_NAME"
+          commit=$(git rev-list -n 1 "$GITHUB_REF_NAME")
+          test "$(git rev-parse HEAD)" = "$commit"
+          git merge-base --is-ancestor "$commit" origin/main
+          printf 'commit=%s\n' "$commit" >> "$GITHUB_OUTPUT"
+
+      - name: ShellCheck
+        run: >-
+          shellcheck --severity=warning
+          zapret-sonar zapret-sonar-tui install.sh
+          lib/*.sh contrib/*.sh tests/*.sh scripts/*.sh
+
+      - name: Check Bash syntax
+        run: |
+          for file in zapret-sonar zapret-sonar-tui install.sh lib/*.sh contrib/*.sh tests/*.sh scripts/*.sh; do
+            bash -n "$file"
+          done
+
+      - name: Run regression and integration tests
+        run: |
+          for test in tests/*.sh; do
+            [[ "$test" == tests/flowseal-release.sh ]] && continue
+            bash "$test" || exit 1
+          done
+
+      - name: Build reproducible release assets
+        id: assets
+        run: |
+          (umask 022; bash scripts/build-release.sh dist)
+          (umask 077; bash scripts/build-release.sh dist-verify)
+          cmp dist/zapret-sonar-*.tar.gz dist-verify/zapret-sonar-*.tar.gz
+          (cd dist && sha256sum -c SHA256SUMS)
+          sha256=$(sha256sum "dist/zapret-sonar-$GITHUB_REF_NAME.tar.gz" | cut -d' ' -f1)
+          printf 'sha256=%s\n' "$sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Store verified release assets
+        id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-${{ github.ref_name }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 1
+
+  upstream-integration:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Test pinned upstream releases
+        run: bash tests/flowseal-release.sh
+
+  publish:
+    needs: [verify, upstream-integration]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download verified release assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-${{ github.ref_name }}
+          path: dist
+
+      - name: Verify assets, tag, and publish release
         env:
+          EXPECTED_COMMIT: ${{ needs.verify.outputs.commit }}
+          EXPECTED_SHA256: ${{ needs.verify.outputs.asset_sha256 }}
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+        run: |
+          asset="dist/zapret-sonar-$GITHUB_REF_NAME.tar.gz"
+          sums="dist/SHA256SUMS"
+          test "$(find dist -maxdepth 1 -type f -printf '%f\n' | sort)" = "$(printf 'SHA256SUMS\nzapret-sonar-%s.tar.gz\n' "$GITHUB_REF_NAME")"
+          test "$(sha256sum "$asset" | cut -d' ' -f1)" = "$EXPECTED_SHA256"
+          (cd dist && sha256sum -c SHA256SUMS)
+          remote=$(git ls-remote "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "refs/tags/$GITHUB_REF_NAME^{}" | cut -f1)
+          if [[ -z "$remote" ]]; then
+            remote=$(git ls-remote "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "refs/tags/$GITHUB_REF_NAME" | cut -f1)
+          fi
+          test "$remote" = "$EXPECTED_COMMIT"
+          gh release create "$GITHUB_REF_NAME" "$asset" "$sums" --verify-tag --generate-notes \
+            --target "$EXPECTED_COMMIT" --title "$GITHUB_REF_NAME"
