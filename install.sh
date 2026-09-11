@@ -143,22 +143,81 @@ unit_is_foreign() {
     return 0
 }
 
+install_config_literal() {
+    local key="$1" line value
+    line=$(grep -E "^[[:space:]]*(export[[:space:]]+)?${key}[[:space:]]*=" "$ZAPRET_BASE/config" 2>/dev/null | tail -1)
+    [[ -n "$line" ]] || return 2
+    [[ "$line" =~ ^[[:space:]]*(export[[:space:]]+)?${key}=([^#[:space:]]+)([[:space:]]+#.*)?[[:space:]]*$ ]] || return 1
+    value="${BASH_REMATCH[2]}"
+    case "$value" in
+        \"*\") [[ "$value" == *\" && ${#value} -ge 2 ]] || return 1; value="${value:1:${#value}-2}" ;;
+        \'*\') [[ "$value" == *\' && ${#value} -ge 2 ]] || return 1; value="${value:1:${#value}-2}" ;;
+    esac
+    [[ "$value" =~ ^[A-Za-z0-9_.-]+$ ]] || return 1
+    printf '%s\n' "$value"
+}
+
+install_effective_fwtype() {
+    local config="$ZAPRET_BASE/config" fwtype="" rc
+    if [[ -f "$config" ]] && ! grep -q '^# zapret-sonar-strategy: ' "$config"; then
+        set +e
+        fwtype=$(install_config_literal FWTYPE); rc=$?
+        set -e
+        case "$rc" in
+            0) ;;
+            2)
+                if command -v nft >/dev/null 2>&1 && install_kernel_at_least_4_16; then fwtype=nftables
+                else fwtype=iptables
+                fi
+                ;;
+            *) die "не удалось определить FWTYPE существующего конфига; укажите канонический FWTYPE=nftables или FWTYPE=iptables" ;;
+        esac
+    elif command -v nft >/dev/null 2>&1; then
+        fwtype=nftables
+    else
+        fwtype=iptables
+    fi
+    case "$fwtype" in
+        nftables|iptables) printf '%s\n' "$fwtype" ;;
+        *) die "неподдерживаемый FWTYPE существующего конфига: $fwtype" ;;
+    esac
+}
+
+install_kernel_at_least_4_16() {
+    local release major minor
+    release=$(uname -r)
+    major=${release%%.*}
+    release=${release#*.}
+    minor=${release%%.*}
+    [[ "$major" =~ ^[0-9]+$ && "$minor" =~ ^[0-9]+$ ]] || return 1
+    (( major > 4 || (major == 4 && minor >= 16) ))
+}
+
 preflight() {
     (( INSTALL_DRY_RUN )) || [[ $EUID -eq 0 ]] || die "запускать от root: sudo ./install.sh"
     (( BASH_VERSINFO[0] >= 4 )) || die "нужен bash 4 или новее"
 
     local missing=()
     local c
-    for c in curl tar sha256sum systemctl flock stat install find grep sed readlink sort head wc mktemp; do
+    for c in curl tar sha256sum systemctl flock stat install find grep sed readlink sort head tail wc mktemp; do
         command -v "$c" >/dev/null 2>&1 || missing+=("$c")
     done
     (( ${#missing[@]} == 0 )) || die "не хватает утилит: ${missing[*]}"
 
-    # nfqws работает через NFQUEUE, нужен хотя бы один backend.
-    if ! command -v nft >/dev/null 2>&1 && ! command -v iptables >/dev/null 2>&1; then
-        die "нужен nftables (nft) или iptables"
-    fi
-    command -v nft >/dev/null 2>&1 || info "ПРЕДУПРЕЖДЕНИЕ: nft не найден, zapret пойдёт через iptables"
+    # Managed configs are rebuilt with the locally available backend. A plain
+    # zapret config is preserved during explicit migration, so its FWTYPE wins.
+    local fwtype; fwtype=$(install_effective_fwtype)
+    case "$fwtype" in
+        nftables)
+            command -v nft >/dev/null 2>&1 || die "существующий конфиг требует nftables (nft)"
+            ;;
+        iptables)
+            command -v iptables >/dev/null 2>&1 || die "существующий конфиг требует iptables"
+            command -v ip6tables >/dev/null 2>&1 || die "для iptables backend нужна утилита ip6tables"
+            command -v ipset >/dev/null 2>&1 || die "для iptables backend нужна утилита ipset"
+            command -v nft >/dev/null 2>&1 || info "ПРЕДУПРЕЖДЕНИЕ: nft не найден, zapret пойдёт через iptables"
+            ;;
+    esac
 
     [[ -d /run/systemd/system ]] || die "systemd не обнаружен — этот установщик рассчитан на systemd"
 

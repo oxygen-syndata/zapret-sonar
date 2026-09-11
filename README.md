@@ -57,7 +57,7 @@ sonar log
 
 - GNU/Linux с `systemd`;
 - bash 4+, curl, tar, sha256sum, flock, iproute2 и стандартные GNU coreutils/findutils/grep/sed;
-- nftables (рекомендуется) или iptables;
+- nftables (рекомендуется) или iptables вместе с ipset;
 - `unzip` нужен только для fallback-обновления из ветки Flowseal;
 - fzf для TUI (опционально);
 - git для показанного способа установки.
@@ -82,7 +82,7 @@ Bash completion: `source contrib/bash-completion.sh` или установите
 | Команда | Назначение |
 |---|---|
 | `sonar check [--json]` | Проверить HTTP/CDN-цели; результат содержит `passed`, `failed`, `skipped` |
-| `sonar doctor` | Проверить сервис, конфиг, nfqws и активную стратегию |
+| `sonar doctor` | Проверить сервис, конфиг, nfqws и активную стратегию; `sudo sonar doctor` дополнительно проверяет firewall interception |
 | `sonar status [--json]` | Показать состояние, режимы и версии; JSON не включает preflight |
 | `sonar validate [--json]` | Проверить все стратегии через трансляцию и `nfqws --dry-run`, ничего не применяя |
 | `sonar export-diagnostic [--output файл]` | Безопасный JSON для issue без сырого конфига, логов, адресов и пользовательских списков |
@@ -197,6 +197,7 @@ lib/zconfig.sh               генерация конфига и ipset-режи
 lib/health.sh                HTTP/content checks, baseline и scoring
 lib/flowseal.sh              staging, activation, rollback и pruning
 tests/                       smoke, safety и pinned Flowseal tests
+tests/vm/                    контракт privileged lifecycle matrix в полных VM
 schemas/                     версионированные JSON Schema для машинного вывода
 scripts/build-release.sh     сборка проверяемого release asset
 .github/workflows/ci.yml     ShellCheck, syntax и regression tests

@@ -246,6 +246,44 @@ _zf_flowseal_ver_file() { printf '%s/.flowseal-version\n' "$ZF_ZAPRET_BASE"; }
 
 _zf_nfqws_version() { "$ZF_NFQWS" --version 2>&1 | head -1; }
 
+_zf_config_literal() {
+    local key="$1" line value
+    line=$(grep -E "^[[:space:]]*(export[[:space:]]+)?${key}[[:space:]]*=" "$ZF_ZAPRET_CONFIG" 2>/dev/null | tail -1)
+    [[ -n "$line" ]] || return 2
+    [[ "$line" =~ ^[[:space:]]*(export[[:space:]]+)?${key}=([^#[:space:]]+)([[:space:]]+#.*)?[[:space:]]*$ ]] || return 1
+    value="${BASH_REMATCH[2]}"
+    case "$value" in
+        \"*\") [[ "$value" == *\" && ${#value} -ge 2 ]] || return 1; value="${value:1:${#value}-2}" ;;
+        \'*\') [[ "$value" == *\' && ${#value} -ge 2 ]] || return 1; value="${value:1:${#value}-2}" ;;
+    esac
+    [[ "$value" =~ ^[A-Za-z0-9_.-]+$ ]] || return 1
+    printf '%s\n' "$value"
+}
+
+_zf_config_literal_or_default() {
+    local key="$1" default="$2" value rc
+    set +e
+    value=$(_zf_config_literal "$key"); rc=$?
+    set -e
+    case "$rc" in
+        0) printf '%s\n' "$value" ;;
+        2) printf '%s\n' "$default" ;;
+        *) return 1 ;;
+    esac
+}
+
+_zf_nfqws_uses_queue() {
+    local qnum="$1" expected proc exe args
+    expected=$(readlink -f "$ZF_NFQWS" 2>/dev/null) || return 1
+    for proc in /proc/[0-9]*; do
+        exe=$(readlink -f "$proc/exe" 2>/dev/null) || continue
+        [[ "$exe" == "$expected" ]] || continue
+        args=$(tr '\0' ' ' < "$proc/cmdline" 2>/dev/null) || continue
+        [[ " $args " == *" --qnum=$qnum "* ]] && return 0
+    done
+    return 1
+}
+
 _zf_json_escape() {
     local value="$1" out="" char escaped code i
     local LC_ALL=C
@@ -650,6 +688,80 @@ cmd_doctor() {
         if (( missing == 0 )) && zf_verify "$ZF_NFQWS" >/dev/null 2>&1; then printf 'OK\n'; else printf 'FAIL\n'; failed=1; fi
     else
         printf 'SKIP (стратегия не применена)\n'
+    fi
+    printf 'Перехват трафика: '
+    if [[ "$st" != active ]]; then
+        printf 'SKIP (сервис не активен)\n'
+    elif (( EUID != 0 )); then
+        printf 'SKIP (firewall rules требуют root)\n'
+    elif ! grep -q '^# zapret-sonar-strategy: ' "$ZF_ZAPRET_CONFIG" 2>/dev/null; then
+        printf 'SKIP (конфиг не управляется zapret-sonar)\n'
+    else
+        local fwtype qnum table rules postnat postnat_hook prenat expected
+        fwtype=$(_zf_config_literal_or_default FWTYPE "") \
+            || { printf 'FAIL (некорректный FWTYPE)\n'; failed=1; fwtype=invalid; }
+        qnum=$(_zf_config_literal_or_default QNUM 200) \
+            || { printf 'FAIL (некорректный QNUM)\n'; failed=1; qnum=invalid; fwtype=invalid; }
+        table=$(_zf_config_literal_or_default ZAPRET_NFT_TABLE zapret) \
+            || { printf 'FAIL (некорректная nftables table)\n'; failed=1; table=invalid; fwtype=invalid; }
+        [[ -n "$fwtype" ]] || { printf 'FAIL (FWTYPE не определён)\n'; failed=1; fwtype=invalid; }
+        [[ "$qnum" =~ ^[0-9]+$ && qnum -le 65535 ]] \
+            || { printf 'FAIL (некорректный QNUM)\n'; failed=1; fwtype=invalid; }
+        [[ "$table" =~ ^[A-Za-z0-9_.-]+$ ]] \
+            || { printf 'FAIL (некорректная nftables table)\n'; failed=1; fwtype=invalid; }
+        if [[ "$fwtype" != invalid ]] && ! _zf_nfqws_uses_queue "$qnum"; then
+            printf 'FAIL (nfqws не слушает NFQUEUE %s)\n' "$qnum"; failed=1; fwtype=invalid
+        fi
+        case "$fwtype" in
+            nftables)
+                if ! command -v nft >/dev/null 2>&1 \
+                    || ! postnat=$(nft list chain inet "$table" postnat 2>/dev/null) \
+                    || ! postnat_hook=$(nft list chain inet "$table" postnat_hook 2>/dev/null) \
+                    || ! prenat=$(nft list chain inet "$table" prenat 2>/dev/null); then
+                    printf 'FAIL (не удалось прочитать nftables rules)\n'; failed=1
+                else
+                    expected='queue([^[:digit:]]|[[:space:]])*to[[:space:]]+'"$qnum"'([^[:digit:]]|$)'
+                    local post_tcp post_udp pre_tcp pre_udp
+                    post_tcp=$(grep -Ec "tcp .*${expected}" <<< "$postnat" || true)
+                    post_udp=$(grep -Ec "udp .*${expected}" <<< "$postnat" || true)
+                    pre_tcp=$(grep -Ec "tcp .*${expected}" <<< "$prenat" || true)
+                    pre_udp=$(grep -Ec "udp .*${expected}" <<< "$prenat" || true)
+                    if (( post_tcp == 1 && post_udp == 1 && pre_tcp == 1 && pre_udp == 1 )) \
+                        && [[ "$postnat_hook" == *'hook postrouting'* && "$postnat_hook" == *'jump postnat'* \
+                              && "$prenat" == *'hook prerouting'* ]]; then
+                    printf 'OK (nftables, NFQUEUE %s)\n' "$qnum"
+                    else
+                        printf 'FAIL (неполный nftables NFQUEUE %s: postnat tcp=%s udp=%s, prenat tcp=%s udp=%s)\n' \
+                            "$qnum" "$post_tcp" "$post_udp" "$pre_tcp" "$pre_udp"; failed=1
+                    fi
+                fi
+                ;;
+            iptables)
+                if ! command -v iptables-save >/dev/null 2>&1 \
+                    || ! rules=$(iptables-save -t mangle 2>/dev/null); then
+                    printf 'FAIL (не удалось прочитать iptables rules)\n'; failed=1
+                else
+                    expected='-j[[:space:]]+NFQUEUE[[:space:]]+--queue-num[[:space:]]+'"$qnum"'([^[:digit:]]|$)'
+                    local post_tcp post_udp input_tcp input_udp forward_tcp forward_udp
+                    post_tcp=$(grep -Ec "^-A POSTROUTING -p tcp .*${expected}" <<< "$rules" || true)
+                    post_udp=$(grep -Ec "^-A POSTROUTING -p udp .*${expected}" <<< "$rules" || true)
+                    input_tcp=$(grep -Ec "^-A INPUT -p tcp .*${expected}" <<< "$rules" || true)
+                    input_udp=$(grep -Ec "^-A INPUT -p udp .*${expected}" <<< "$rules" || true)
+                    forward_tcp=$(grep -Ec "^-A FORWARD -p tcp .*${expected}" <<< "$rules" || true)
+                    forward_udp=$(grep -Ec "^-A FORWARD -p udp .*${expected}" <<< "$rules" || true)
+                    if (( post_tcp == 1 && post_udp == 1 && input_tcp == 1 && input_udp == 1 \
+                          && forward_tcp == 1 && forward_udp == 1 )); then
+                        printf 'OK (iptables, NFQUEUE %s)\n' "$qnum"
+                    else
+                        printf 'FAIL (неполный iptables NFQUEUE %s)\n' "$qnum"; failed=1
+                    fi
+                fi
+                ;;
+            invalid) ;;
+            *)
+                printf 'FAIL (неизвестный FWTYPE: %s)\n' "${fwtype:-не задан}"; failed=1
+                ;;
+        esac
     fi
     printf '\nИтог: %s\n' "$([[ $failed -eq 0 ]] && printf OK || printf FAIL)"
     return "$failed"
@@ -1658,7 +1770,7 @@ cmd_help() {
         site)      printf 'Управление списком list-general-user.txt.\n  site <домен> — добавить\n  site --list — показать\n  site --remove <домен> — удалить\n  Поддомены учитываются автоматически.\n' ;;
         start|stop|restart|enable|disable) printf 'Управление сервисом zapret.\n  enable/disable — автозапуск.\n' ;;
         log)       printf 'Логи сервиса (journalctl).\n  log — последние 50 строк\n  log -f — следить в реальном времени\n  log "1 hour ago" — за период\n' ;;
-        doctor)    printf 'Сводная диагностика сервиса, конфига, nfqws и активной стратегии.\n' ;;
+        doctor)    printf 'Сводная диагностика сервиса, конфига, nfqws и стратегии. sudo дополнительно проверяет firewall interception.\n' ;;
         *)         usage ;;
     esac
 }

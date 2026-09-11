@@ -57,7 +57,7 @@ Also check:
 
 - GNU/Linux with `systemd`;
 - bash 4+, curl, tar, sha256sum, flock, iproute2, and standard GNU coreutils/findutils/grep/sed;
-- nftables (recommended) or iptables;
+- nftables (recommended), or iptables together with ipset;
 - `unzip` only for the Flowseal branch fallback;
 - fzf for the optional TUI;
 - git for the installation method shown above.
@@ -82,7 +82,7 @@ Tested on CachyOS (Arch, x86_64) and Ubuntu Server 26.04 LTS (x86_64). Other dis
 | Command | Purpose |
 |---|---|
 | `sonar check [--json]` | Check HTTP/CDN targets; output tracks `passed`, `failed`, and `skipped` |
-| `sonar doctor` | Check the service, config, nfqws, and active strategy |
+| `sonar doctor` | Check the service, config, nfqws, and active strategy; `sudo sonar doctor` also verifies firewall interception |
 | `sonar status [--json]` | Show state, modes, and versions; JSON excludes preflight checks |
 | `sonar validate [--json]` | Validate every strategy through translation and `nfqws --dry-run` without applying it |
 | `sonar export-diagnostic [--output file]` | Safe issue JSON without raw config, logs, addresses, or user lists |
@@ -197,6 +197,7 @@ lib/zconfig.sh               config generation and ipset modes
 lib/health.sh                HTTP/content checks, baseline, and scoring
 lib/flowseal.sh              staging, activation, rollback, and pruning
 tests/                       smoke, safety, and pinned Flowseal tests
+tests/vm/                    full-VM privileged lifecycle matrix contract
 schemas/                     versioned JSON Schemas for machine-readable output
 scripts/build-release.sh     verified release asset builder
 .github/workflows/ci.yml     ShellCheck, syntax, and regression tests
