@@ -111,7 +111,7 @@ jobs:
           test "$remote" = "$EXPECTED_COMMIT"
           release=$(gh release view "$GITHUB_REF_NAME" --json isDraft,targetCommitish 2>/dev/null || true)
           if [[ -z "$release" ]]; then
-            gh release create "$GITHUB_REF_NAME" --draft --verify-tag --generate-notes \
+            gh release create "$GITHUB_REF_NAME" --draft --generate-notes \
               --target "$EXPECTED_COMMIT" --title "$GITHUB_REF_NAME"
           else
             jq -e --arg commit "$EXPECTED_COMMIT" '.isDraft and .targetCommitish == $commit' <<< "$release" >/dev/null
