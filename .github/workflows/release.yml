@@ -109,9 +109,10 @@ jobs:
             remote=$(git ls-remote "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "refs/tags/$GITHUB_REF_NAME" | cut -f1)
           fi
           test "$remote" = "$EXPECTED_COMMIT"
-          release=$(gh release view "$GITHUB_REF_NAME" --json isDraft,targetCommitish 2>/dev/null || true)
+          release=$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --json isDraft,targetCommitish 2>/dev/null || true)
           if [[ -z "$release" ]]; then
-            gh release create "$GITHUB_REF_NAME" --draft --generate-notes \
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft --generate-notes \
               --target "$EXPECTED_COMMIT" --title "$GITHUB_REF_NAME"
           else
             jq -e --arg commit "$EXPECTED_COMMIT" '.isDraft and .targetCommitish == $commit' <<< "$release" >/dev/null
@@ -119,13 +120,13 @@ jobs:
           for file in "$asset" "$sums"; do
             name=$(basename "$file")
             expected="sha256:$(sha256sum "$file" | cut -d' ' -f1)"
-            actual=$(gh release view "$GITHUB_REF_NAME" --json assets \
+            actual=$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json assets \
               --jq ".assets[] | select(.name == \"$name\") | .digest")
             if [[ -z "$actual" ]]; then
-              gh release upload "$GITHUB_REF_NAME" "$file"
+              gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" "$file"
             else
               test "$actual" = "$expected"
             fi
           done
-          test "$(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets | map(.name) | sort | join("\n")')" \
+          test "$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets | map(.name) | sort | join("\n")')" \
             = "$(printf 'SHA256SUMS\nzapret-sonar-%s.tar.gz' "$GITHUB_REF_NAME")"
