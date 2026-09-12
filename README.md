@@ -57,14 +57,15 @@ sonar log
 
 - GNU/Linux с `systemd`;
 - bash 4+, curl, tar, sha256sum, flock, iproute2 и стандартные GNU coreutils/findutils/grep/sed;
-- nftables (рекомендуется) или iptables вместе с ipset;
+- nftables (рекомендуется) или iptables вместе с `ipset` и `ip6tables`;
+- `restorecon` из policycoreutils на системах с активным SELinux;
 - `unzip` нужен только для fallback-обновления из ветки Flowseal;
 - fzf для TUI (опционально);
 - git для показанного способа установки.
 
 Bash completion: `source contrib/bash-completion.sh` или установите файл системно в `/etc/bash_completion.d/zapret-sonar`.
 
-Проверено на CachyOS (Arch, x86_64) и Ubuntu Server 26.04 LTS (x86_64). Другие дистрибутивы с совместимым GNU userspace могут работать, но пока не входят в проверенную матрицу.
+Установка, переустановка, управление сервисом и удаление проверены на Ubuntu Server 26.04 LTS, Arch Linux и Fedora 44 (x86_64). Матрица охватывает nftables, iptables-legacy с ipset и Fedora с SELinux Enforcing.
 
 ## Команды
 
@@ -197,7 +198,7 @@ lib/zconfig.sh               генерация конфига и ipset-режи
 lib/health.sh                HTTP/content checks, baseline и scoring
 lib/flowseal.sh              staging, activation, rollback и pruning
 tests/                       smoke, safety и pinned Flowseal tests
-tests/vm/                    контракт privileged lifecycle matrix в полных VM
+tests/vm/                    lifecycle-тесты в изолированных VM
 schemas/                     версионированные JSON Schema для машинного вывода
 scripts/build-release.sh     сборка проверяемого release asset
 .github/workflows/ci.yml     ShellCheck, syntax и regression tests

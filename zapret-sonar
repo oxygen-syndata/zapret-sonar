@@ -13,7 +13,7 @@
 
 set -uo pipefail
 
-ZF_VERSION="1.3.3"
+ZF_VERSION="1.3.4"
 ZF_SELF="$(readlink -f "${BASH_SOURCE[0]}")"
 if [[ "${1:-}" == --install-root ]]; then
     [[ $# -ge 2 && -d "$2" && ! -L "$2" ]] || { printf 'ошибка: некорректный install root\n' >&2; exit 1; }
@@ -551,12 +551,19 @@ cmd_apply() {
     local name="$1" gf="$2" ipset="$3"
     _zf_require_root _apply
     _zf_lock
-    local backup="" had_config=0 was_active=0 restore_ok=1
+    local backup="" marker_backup="" had_config=0 had_marker=0 was_active=0 restore_ok=1
     [[ "$(systemctl is-active "$ZF_SERVICE" 2>/dev/null || true)" == active ]] && was_active=1
     if [[ -f "$ZF_ZAPRET_CONFIG" ]]; then
         backup=$(mktemp "$ZF_ZAPRET_BASE/.config.apply.XXXXXX") || return 1
         cp -a "$ZF_ZAPRET_CONFIG" "$backup" || { rm -f "$backup"; return 1; }
         had_config=1
+    fi
+    local marker
+    marker=$(_zf_firewall_owner_file)
+    if [[ -f "$marker" ]]; then
+        marker_backup=$(mktemp "$ZF_ZAPRET_BASE/.firewall-owner.apply.XXXXXX") || { rm -f "$backup"; return 1; }
+        cp -a "$marker" "$marker_backup" || { rm -f "$backup" "$marker_backup"; return 1; }
+        had_marker=1
     fi
     local old_int old_term old_hup
     old_int=$(trap -p INT); old_term=$(trap -p TERM); old_hup=$(trap -p HUP)
@@ -573,7 +580,9 @@ cmd_apply() {
         else rm -f "$ZF_ZAPRET_CONFIG"; fi
         if (( was_active )); then systemctl restart "$ZF_SERVICE" >/dev/null 2>&1 || true
         else systemctl stop "$ZF_SERVICE" >/dev/null 2>&1 || true; fi
-        rm -f "$backup"
+        if (( had_marker )); then cp -a "$marker_backup" "$marker" >/dev/null 2>&1 || true
+        else rm -f "$marker"; fi
+        rm -f "$backup" "$marker_backup"
         case "$signal" in
             INT)  [[ -n "$old_int" ]] && kill -s INT "$$"; exit 130 ;;
             TERM) [[ -n "$old_term" ]] && kill -s TERM "$$"; exit 143 ;;
@@ -586,7 +595,7 @@ cmd_apply() {
 
     if ! cmd_render "$name" "$gf" "$ipset"; then
         _zf_restore_signal_traps
-        rm -f "$backup"
+        rm -f "$backup" "$marker_backup"
         return 1
     fi
     if ! systemctl restart "$ZF_SERVICE"; then
@@ -601,13 +610,38 @@ cmd_apply() {
         else
             systemctl stop "$ZF_SERVICE" >/dev/null 2>&1 || restore_ok=0
         fi
-        rm -f "$backup"
+        rm -f "$backup" "$marker_backup"
         (( restore_ok )) || { printf 'ошибка: применение не удалось, прежнее состояние восстановить не удалось\n' >&2; return 1; }
         printf 'ошибка: применение не удалось, прежнее состояние восстановлено\n' >&2
         return 1
     fi
+    _zf_record_firewall_ownership || {
+        _zf_restore_signal_traps
+        if (( had_config )); then
+            cp -a "$backup" "$ZF_ZAPRET_CONFIG" || restore_ok=0
+        else
+            rm -f "$ZF_ZAPRET_CONFIG" || restore_ok=0
+        fi
+        if (( had_marker )); then
+            cp -a "$marker_backup" "$marker" || restore_ok=0
+        else
+            rm -f "$marker" || restore_ok=0
+        fi
+        if (( was_active )); then
+            systemctl restart "$ZF_SERVICE" >/dev/null 2>&1 || restore_ok=0
+        else
+            systemctl stop "$ZF_SERVICE" >/dev/null 2>&1 || restore_ok=0
+        fi
+        rm -f "$backup" "$marker_backup"
+        if (( restore_ok == 0 )); then
+            printf 'ошибка: ownership marker не записан, прежнее состояние восстановить не удалось\n' >&2
+        else
+            printf 'ошибка: ownership marker не записан, прежнее состояние восстановлено\n' >&2
+        fi
+        return 1
+    }
     _zf_restore_signal_traps
-    rm -f "$backup"
+    rm -f "$backup" "$marker_backup"
 }
 
 cmd_status_json() {
@@ -842,11 +876,17 @@ cmd_try() {
     _zf_lock
 
     local restore_to; restore_to=$(zf_state strategy)
-    local original_active=0 original_config="" try_committed=0
+    local original_active=0 original_config="" original_marker="" marker_backup="" had_marker=0 try_committed=0
     [[ "$(systemctl is-active "$ZF_SERVICE" 2>/dev/null || true)" == active ]] && original_active=1
     if [[ -f "$ZF_ZAPRET_CONFIG" ]]; then
         original_config=$(mktemp "$ZF_ZAPRET_BASE/.config.try.XXXXXX") || die "не удалось сохранить текущий конфиг"
         cp -a "$ZF_ZAPRET_CONFIG" "$original_config" || { rm -f "$original_config"; die "не удалось сохранить текущий конфиг"; }
+    fi
+    original_marker=$(_zf_firewall_owner_file)
+    if [[ -f "$original_marker" ]]; then
+        marker_backup=$(mktemp "$ZF_ZAPRET_BASE/.firewall-owner.try.XXXXXX") || die "не удалось сохранить firewall ownership"
+        cp -a "$original_marker" "$marker_backup" || { rm -f "$marker_backup"; die "не удалось сохранить firewall ownership"; }
+        had_marker=1
     fi
     _try_restore() {
         local restore_ok=1
@@ -854,6 +894,11 @@ cmd_try() {
             cp -a "$original_config" "$ZF_ZAPRET_CONFIG" || restore_ok=0
         else
             rm -f "$ZF_ZAPRET_CONFIG" || restore_ok=0
+        fi
+        if (( had_marker )); then
+            cp -a "$marker_backup" "$original_marker" || restore_ok=0
+        else
+            rm -f "$original_marker" || restore_ok=0
         fi
         if (( original_active )); then
             systemctl restart "$ZF_SERVICE" >/dev/null 2>&1 || restore_ok=0
@@ -870,6 +915,7 @@ cmd_try() {
             _try_restore || printf 'КРИТИЧНО: исходное состояние восстановить не удалось\n' >&2
         fi
         [[ -n "$original_config" ]] && rm -f "$original_config"
+        [[ -n "$marker_backup" ]] && rm -f "$marker_backup"
         return "$rc"
     }
     _try_interrupted() { exit 130; }
@@ -887,6 +933,7 @@ cmd_try() {
                 try_committed=1
                 trap - EXIT INT TERM HUP
                 [[ -n "$original_config" ]] && rm -f "$original_config"
+                [[ -n "$marker_backup" ]] && rm -f "$marker_backup"
                 return 0
             fi
         fi
@@ -942,9 +989,11 @@ cmd_try() {
                 [[ -z "$first_ok" ]] && first_ok="$name"
                 if (( keep )); then
                     printf '\n--keep: оставляю %s\n' "$name"
+                    _zf_record_firewall_ownership || die "не удалось записать firewall ownership"
                     try_committed=1
                     trap - EXIT INT TERM HUP
                     [[ -n "$original_config" ]] && rm -f "$original_config"
+                    [[ -n "$marker_backup" ]] && rm -f "$marker_backup"
                     return 0
                 fi ;;
             2) broke+=("$name") ;;
@@ -973,6 +1022,7 @@ cmd_try() {
         try_committed=1
         trap - EXIT INT TERM HUP
         [[ -n "$original_config" ]] && rm -f "$original_config"
+        [[ -n "$marker_backup" ]] && rm -f "$marker_backup"
         (( ${#worked[@]} > 0 )) && printf 'применить: zapret-sonar use "%s"\n' "${worked[0]}"
     fi
     (( ${#worked[@]} > 0 ))
@@ -1643,7 +1693,166 @@ cmd_do_upgrade() {
     printf '\nzapret обновлён: %s -> %s\n' "$old_ver" "$(_zf_nfqws_version)"
 }
 
-# --- Удаление ----------------------------------------------------------------
+# --- Firewall ownership and uninstall -----------------------------------------
+_zf_firewall_owner_file() { printf '%s/.zapret-sonar-firewall\n' "$ZF_ZAPRET_BASE"; }
+
+_zf_record_firewall_ownership() {
+    local fwtype qnum table owner tmp
+    fwtype=$(_zf_config_literal_or_default FWTYPE "") || return 1
+    qnum=$(_zf_config_literal_or_default QNUM 200) || return 1
+    table=$(_zf_config_literal_or_default ZAPRET_NFT_TABLE zapret) || return 1
+    [[ "$fwtype" == nftables || "$fwtype" == iptables ]] || return 1
+    [[ "$qnum" =~ ^[0-9]+$ && qnum -le 65535 ]] || return 1
+    [[ "$table" =~ ^[A-Za-z0-9_.-]+$ ]] || return 1
+    owner=$(_zf_firewall_owner_file)
+    tmp=$(mktemp "$ZF_ZAPRET_BASE/.firewall-owner.XXXXXX") || return 1
+    printf 'FWTYPE=%s\nQNUM=%s\nTABLE=%s\n' "$fwtype" "$qnum" "$table" > "$tmp" \
+        && chmod 600 "$tmp" && chown root:root "$tmp" && mv -f "$tmp" "$owner" \
+        || { rm -f "$tmp"; return 1; }
+}
+
+_zf_firewall_ownership_matches() {
+    local owner fwtype qnum table expected
+    owner=$(_zf_firewall_owner_file)
+    [[ -f "$owner" && ! -L "$owner" && "$(stat -c %u "$owner" 2>/dev/null)" == 0 ]] || return 1
+    fwtype=$(_zf_config_literal_or_default FWTYPE "") || return 1
+    qnum=$(_zf_config_literal_or_default QNUM 200) || return 1
+    table=$(_zf_config_literal_or_default ZAPRET_NFT_TABLE zapret) || return 1
+    expected=$(printf 'FWTYPE=%s\nQNUM=%s\nTABLE=%s' "$fwtype" "$qnum" "$table")
+    [[ "$(<"$owner")" == "$expected" ]]
+}
+
+_zf_nft_table_is_owned() {
+    local table="$1" rules kind name qnum expected post_tcp post_udp pre_tcp pre_udp
+    qnum=$(_zf_config_literal_or_default QNUM 200) || return 1
+    [[ "$qnum" =~ ^[0-9]+$ && qnum -le 65535 ]] || return 1
+    rules=$(nft list table inet "$table" 2>/dev/null) || return 1
+    grep -Fq "table inet $table {" <<< "$rules" || return 1
+    grep -Eq '^[[:space:]]*set zapret \{' <<< "$rules" || return 1
+    grep -Eq '^[[:space:]]*set nozapret \{' <<< "$rules" || return 1
+    grep -Eq '^[[:space:]]*chain postnat \{' <<< "$rules" || return 1
+    grep -Eq '^[[:space:]]*chain prenat \{' <<< "$rules" || return 1
+    grep -Eq '^[[:space:]]*chain predefrag_nfqws \{' <<< "$rules" || return 1
+    expected='queue([^[:digit:]]|[[:space:]])*to[[:space:]]+'"$qnum"'([^[:digit:]]|$)'
+    post_tcp=$(awk '/^[[:space:]]*chain postnat \{/ { in_chain=1; next }
+                    /^[[:space:]]*chain / { in_chain=0 }
+                    in_chain && /^[[:space:]]*tcp / { print }' <<< "$rules" | grep -Ec "$expected" || true)
+    post_udp=$(awk '/^[[:space:]]*chain postnat \{/ { in_chain=1; next }
+                    /^[[:space:]]*chain / { in_chain=0 }
+                    in_chain && /^[[:space:]]*udp / { print }' <<< "$rules" | grep -Ec "$expected" || true)
+    pre_tcp=$(awk '/^[[:space:]]*chain prenat \{/ { in_chain=1; next }
+                   /^[[:space:]]*chain / { in_chain=0 }
+                   in_chain && /^[[:space:]]*tcp / { print }' <<< "$rules" | grep -Ec "$expected" || true)
+    pre_udp=$(awk '/^[[:space:]]*chain prenat \{/ { in_chain=1; next }
+                   /^[[:space:]]*chain / { in_chain=0 }
+                   in_chain && /^[[:space:]]*udp / { print }' <<< "$rules" | grep -Ec "$expected" || true)
+    (( post_tcp == 1 && post_udp == 1 && pre_tcp == 1 && pre_udp == 1 )) || return 1
+    while read -r kind name; do
+        case "$kind:$name" in
+            set:zapret|set:zapret6|set:ipban|set:ipban6|set:nozapret|set:nozapret6|\
+            set:lanif|set:wanif|set:wanif6|map:link_local|flowtable:ft|\
+            chain:dnat_output|chain:dnat_pre|chain:forward|chain:input|\
+            chain:flow_offload|chain:localnet_protect|chain:postrouting|\
+            chain:postrouting_hook|chain:postnat|chain:postnat_hook|\
+            chain:prerouting|chain:prenat|chain:predefrag|chain:predefrag_nfqws) ;;
+            *) return 1 ;;
+        esac
+    done < <(awk '$1 ~ /^(set|map|flowtable|chain)$/ { print $1, $2 }' <<< "$rules")
+}
+
+_zf_iptables_state_is_owned() {
+    local qnum rules expected post_tcp post_udp input_tcp input_udp forward_tcp forward_udp
+    qnum=$(_zf_config_literal_or_default QNUM 200) || return 1
+    [[ "$qnum" =~ ^[0-9]+$ && qnum -le 65535 ]] || return 1
+    rules=$(iptables-save -t mangle 2>/dev/null) || return 1
+    expected='-j[[:space:]]+NFQUEUE[[:space:]]+--queue-num[[:space:]]+'"$qnum"'([^[:digit:]]|$)'
+    post_tcp=$(grep -Ec "^-A POSTROUTING -p tcp .*${expected}" <<< "$rules" || true)
+    post_udp=$(grep -Ec "^-A POSTROUTING -p udp .*${expected}" <<< "$rules" || true)
+    input_tcp=$(grep -Ec "^-A INPUT -p tcp .*${expected}" <<< "$rules" || true)
+    input_udp=$(grep -Ec "^-A INPUT -p udp .*${expected}" <<< "$rules" || true)
+    forward_tcp=$(grep -Ec "^-A FORWARD -p tcp .*${expected}" <<< "$rules" || true)
+    forward_udp=$(grep -Ec "^-A FORWARD -p udp .*${expected}" <<< "$rules" || true)
+    (( post_tcp == 1 && post_udp == 1 && input_tcp == 1 && input_udp == 1 \
+        && forward_tcp == 1 && forward_udp == 1 ))
+}
+
+_zf_cleanup_firewall_state() {
+    local nft_table_owned="${1:-0}" iptables_state_owned="${2:-0}" fwtype qnum table
+    fwtype=$(_zf_config_literal_or_default FWTYPE "") || return 1
+    case "$fwtype" in
+        nftables)
+            command -v nft >/dev/null 2>&1 || return 1
+            table=$(_zf_config_literal_or_default ZAPRET_NFT_TABLE zapret) || return 1
+            [[ "$table" =~ ^[A-Za-z0-9_.-]+$ ]] || return 1
+            local tables
+            tables=$(nft list tables 2>/dev/null) || return 1
+            if grep -Fxq "table inet $table" <<< "$tables"; then
+                (( nft_table_owned )) || return 1
+                nft delete table inet "$table" 2>/dev/null || return 1
+                printf '  очищена таблица nftables inet %s\n' "$table"
+            fi
+            return 0
+            ;;
+        iptables) ;;
+        *) return 1 ;;
+    esac
+
+    command -v iptables-save >/dev/null 2>&1 || return 1
+    command -v ip6tables-save >/dev/null 2>&1 || return 1
+    local rules
+    qnum=$(_zf_config_literal_or_default QNUM 200) || return 1
+    [[ "$qnum" =~ ^[0-9]+$ && qnum -le 65535 ]] || return 1
+    rules=$(iptables-save 2>/dev/null) || return 1
+    ! grep -Eq -- "-j NFQUEUE .*--queue-num ${qnum}([^[:digit:]]|$)" <<< "$rules" || return 1
+    ! grep -Eq -- '(^|[[:space:]])(input_rule_zapret|--match-set[[:space:]]+(zapret|ipban|nozapret))([[:space:]]|$)' <<< "$rules" || return 1
+    rules=$(ip6tables-save 2>/dev/null) || return 1
+    ! grep -Eq -- "-j NFQUEUE .*--queue-num ${qnum}([^[:digit:]]|$)" <<< "$rules" || return 1
+    ! grep -Eq -- '(^|[[:space:]])(--match-set[[:space:]]+(zapret6|ipban6|nozapret6))([[:space:]]|$)' <<< "$rules" || return 1
+
+    (( iptables_state_owned )) || return 0
+    command -v ipset >/dev/null 2>&1 || return 1
+    local name removed=0
+    for name in zapret zapret6 ipban ipban6 nozapret nozapret6; do
+        if ipset list "$name" >/dev/null 2>&1; then
+            ipset destroy "$name" 2>/dev/null || return 1
+            removed=$((removed + 1))
+        fi
+    done
+    (( removed == 0 )) || printf '  удалено ipset-наборов: %d\n' "$removed"
+}
+
+_zf_installed_nfqws_running() {
+    local proc exe
+    for proc in /proc/[0-9]*; do
+        exe=$(readlink "$proc/exe" 2>/dev/null || true)
+        [[ "$exe" == "$ZF_NFQWS" || "$exe" == "$ZF_NFQWS (deleted)" ]] && return 0
+    done
+    return 1
+}
+
+_zf_unit_is_owned() {
+    local unit="$1"
+    [[ -f "$unit" && ! -L "$unit" ]] || return 1
+    grep -Fxq "ExecStart=$ZF_ZAPRET_BASE/init.d/sysv/zapret start" "$unit" 2>/dev/null \
+        && grep -Fxq "ExecStop=$ZF_ZAPRET_BASE/init.d/sysv/zapret stop" "$unit" 2>/dev/null
+}
+
+_zf_service_fragment_path() {
+    systemctl show "$ZF_SERVICE" -p LoadState -p FragmentPath -p DropInPaths \
+        -p ExecStart -p ExecStop 2>/dev/null
+}
+
+_zf_uninstall_restore_service_state() {
+    local was_active="$1" was_enabled="$2" restore_ok=1
+    if (( was_enabled )); then
+        systemctl enable "$ZF_SERVICE" >/dev/null 2>&1 || restore_ok=0
+    fi
+    if (( was_active )); then
+        systemctl start "$ZF_SERVICE" >/dev/null 2>&1 || restore_ok=0
+    fi
+    (( restore_ok ))
+}
+
 cmd_uninstall() {
     [[ $EUID -eq 0 ]] || die "uninstall требует root (sudo $0 uninstall)"
     _zf_lock
@@ -1652,7 +1861,7 @@ cmd_uninstall() {
     printf 'Будет удалено:\n'
     printf '  • сервис %s (остановка + disable)\n' "$ZF_SERVICE"
     printf '  • systemd-юнит /etc/systemd/system/%s.service\n' "$ZF_SERVICE"
-    printf '  • nftables таблица inet zapret\n'
+    printf '  • firewall state из текущего управляемого конфига\n'
     printf '  • симлинки %s/{zapret-sonar,sonar,zapret-sonar-tui,sonar-tui}\n' "$ZF_BIN_DEST"
     printf '  • рабочая директория %s (включая config.orig и *-user.txt)\n' "$ZF_ZAPRET_BASE"
     printf '\n'
@@ -1662,55 +1871,116 @@ cmd_uninstall() {
     [[ "$confirm" =~ ^[yYдД]$ ]] || { printf 'отменено\n'; return 0; }
     printf '\n'
 
-    # 1. Остановить и отключить сервис
-    if [[ "active" == "$(systemctl is-active "$ZF_SERVICE" 2>/dev/null)" ]]; then
-        systemctl stop "$ZF_SERVICE"
-        printf '  сервис остановлен\n'
-    fi
-    if [[ "enabled" == "$(systemctl is-enabled "$ZF_SERVICE" 2>/dev/null)" ]]; then
-        systemctl disable "$ZF_SERVICE" 2>/dev/null
-        printf '  автозапуск отключён\n'
-    fi
-
-    # 2. Удалить systemd-юнит (только если он наш)
-    local unit="/etc/systemd/system/$ZF_SERVICE.service"
-    if [[ -f "$unit" ]]; then
-        if grep -q 'init.d/sysv/zapret' "$unit" 2>/dev/null; then
-            rm -f "$unit"
-            systemctl daemon-reload
-            printf '  удалён юнит %s\n' "$unit"
-        else
-            printf '  юнит %s не наш (init.d/sysv/zapret) — пропускаю\n' "$unit"
-        fi
-    fi
-
-    # 3. Очистить правила nftables
-    if command -v nft >/dev/null 2>&1; then
-        if nft list table inet zapret >/dev/null 2>&1; then
-            nft delete table inet zapret 2>/dev/null
-            printf '  очищена таблица nftables inet zapret\n'
-        else
-            printf '  nftables inet zapret не найдена\n'
-        fi
-    fi
-
-    # 4. Удалить только симлинки этой установки
-    local removed
-    removed=$(_zf_remove_command_links)
-    printf '  удалено симлинков: %d\n' "$removed"
-
-    # 5. Восстановить config.orig если есть
-    if [[ -f "$ZF_ZAPRET_BASE/config.orig" ]]; then
-        cp -a "$ZF_ZAPRET_BASE/config.orig" "$ZF_ZAPRET_BASE/config"
-        printf '  config.orig восстановлен как config\n'
-    fi
-
-    # 6. Удалить рабочую директорию (guard: не удалять пустой путь или корень)
+    local unit="/etc/systemd/system/$ZF_SERVICE.service" fragment was_active=0 was_enabled=0
+    local enabled_state
+    local systemd_show load_state dropins exec_start exec_stop
+    local nft_table_owned=0 iptables_state_owned=0 fwtype ownership_matches=0
     case "$ZF_ZAPRET_BASE" in
         ''|/) die "отказываюсь удалять корень или пустой путь: [$ZF_ZAPRET_BASE]" ;;
     esac
     [[ -f "$ZF_ZAPRET_BASE/nfq/nfqws" ]] || die "в $ZF_ZAPRET_BASE нет nfqws — это не наш каталог"
-    rm -rf "$ZF_ZAPRET_BASE"
+    if [[ -e "$unit" || -L "$unit" ]]; then
+        _zf_unit_is_owned "$unit" || die "юнит $unit принадлежит другому проекту"
+    fi
+    local vendor_unit
+    for vendor_unit in "/run/systemd/system/$ZF_SERVICE.service" "/usr/lib/systemd/system/$ZF_SERVICE.service" "/lib/systemd/system/$ZF_SERVICE.service"; do
+        [[ ! -e "$vendor_unit" && ! -L "$vendor_unit" ]] \
+            || die "обнаружен одноимённый сторонний systemd unit: $vendor_unit"
+    done
+    systemd_show=$(_zf_service_fragment_path) \
+        || die "не удалось получить effective systemd unit $ZF_SERVICE"
+    load_state=$(sed -n 's/^LoadState=//p' <<< "$systemd_show")
+    fragment=$(sed -n 's/^FragmentPath=//p' <<< "$systemd_show")
+    dropins=$(sed -n 's/^DropInPaths=//p' <<< "$systemd_show")
+    exec_start=$(sed -n 's/^ExecStart=//p' <<< "$systemd_show")
+    exec_stop=$(sed -n 's/^ExecStop=//p' <<< "$systemd_show")
+    if [[ "$load_state" != not-found && "$fragment" != "$unit" ]]; then
+        die "сервис $ZF_SERVICE загружен из чужого юнита: $fragment"
+    fi
+    if [[ "$load_state" != not-found ]]; then
+        [[ -z "$dropins" || "$dropins" == /usr/lib/systemd/system/service.d/10-timeout-abort.conf ]] \
+            || die "у сервиса $ZF_SERVICE есть неожиданный systemd drop-in"
+        [[ "$(grep -c '^ExecStart=' <<< "$systemd_show")" == 1 && \
+           "$(grep -c '^ExecStop=' <<< "$systemd_show")" == 1 ]] \
+            || die "у сервиса $ZF_SERVICE несколько команд запуска/остановки"
+        [[ "$exec_start" == *"$ZF_ZAPRET_BASE/init.d/sysv/zapret start"* ]] \
+            || die "ExecStart сервиса $ZF_SERVICE принадлежит другому проекту"
+        [[ "$exec_stop" == *"$ZF_ZAPRET_BASE/init.d/sysv/zapret stop"* ]] \
+            || die "ExecStop сервиса $ZF_SERVICE принадлежит другому проекту"
+    fi
+    [[ "$(systemctl is-active "$ZF_SERVICE" 2>/dev/null || true)" == active ]] && was_active=1
+    enabled_state=$(systemctl is-enabled "$ZF_SERVICE" 2>/dev/null || true)
+    [[ "$enabled_state" == enabled || "$enabled_state" == enabled-runtime ]] && was_enabled=1
+    _zf_firewall_ownership_matches && ownership_matches=1
+    fwtype=$(_zf_config_literal_or_default FWTYPE "") || die "не удалось определить firewall backend"
+    if [[ "$fwtype" == nftables ]]; then
+        local table tables
+        table=$(_zf_config_literal_or_default ZAPRET_NFT_TABLE zapret) \
+            || die "не удалось определить nftables table"
+        [[ "$table" =~ ^[A-Za-z0-9_.-]+$ ]] || die "некорректное имя nftables table: $table"
+        tables=$(nft list tables 2>/dev/null) || die "не удалось прочитать nftables tables"
+        if grep -Fxq "table inet $table" <<< "$tables"; then
+            (( ownership_matches )) || die "нет ownership marker для nftables table inet $table"
+            _zf_nft_table_is_owned "$table" || die "nftables table inet $table не распознана как управляемая"
+            nft_table_owned=1
+        fi
+    elif [[ "$fwtype" == iptables ]] && (( was_active )); then
+        _zf_iptables_state_is_owned || die "активный iptables state не распознан как управляемый"
+        iptables_state_owned=1
+    elif [[ "$fwtype" == iptables ]]; then
+        (( ownership_matches )) && iptables_state_owned=1
+    fi
+
+    # 1. Остановить и отключить сервис. Stop нужен и для failed/inactive unit:
+    # он очищает cgroup и не даёт удалить бинарник под живым процессом.
+    if [[ -f "$unit" ]]; then
+        systemctl stop "$ZF_SERVICE" || die "не удалось остановить сервис $ZF_SERVICE"
+        printf '  сервис остановлен\n'
+    fi
+    if _zf_installed_nfqws_running; then
+        _zf_uninstall_restore_service_state "$was_active" "$was_enabled" \
+            || die "после остановки остался nfqws, исходное состояние сервиса восстановить не удалось"
+        die "после остановки сервиса остался процесс nfqws, исходное состояние сервиса восстановлено"
+    fi
+    if [[ -f "$unit" && "$was_enabled" == 1 ]]; then
+        if ! systemctl disable "$ZF_SERVICE" 2>/dev/null; then
+            _zf_uninstall_restore_service_state "$was_active" "$was_enabled" \
+                || die "не удалось отключить автозапуск, исходное состояние сервиса восстановить не удалось"
+            die "не удалось отключить автозапуск, исходное состояние сервиса восстановлено"
+        fi
+        printf '  автозапуск отключён\n'
+    fi
+
+    # 2. Очистить оставшееся состояние firewall, пока init scripts доступны
+    if ! _zf_cleanup_firewall_state "$nft_table_owned" "$iptables_state_owned"; then
+        _zf_uninstall_restore_service_state "$was_active" "$was_enabled" \
+            || die "firewall state не очищен, исходное состояние сервиса восстановить не удалось"
+        die "firewall state не очищен, исходное состояние сервиса восстановлено"
+    fi
+
+    # 3. Удалить systemd-юнит (только если он наш)
+    if [[ -f "$unit" ]]; then
+        rm -f "$unit" || die "не удалось удалить юнит $unit"
+        systemctl daemon-reload || die "не удалось обновить конфигурацию systemd"
+        printf '  удалён юнит %s\n' "$unit"
+    fi
+
+    # 4. Удалить только симлинки этой установки
+    local removed
+    removed=$(_zf_remove_command_links) || die "не удалось удалить командные симлинки"
+    printf '  удалено симлинков: %d\n' "$removed"
+
+    # 5. Восстановить config.orig если есть
+    if [[ -f "$ZF_ZAPRET_BASE/config.orig" ]]; then
+        cp -a "$ZF_ZAPRET_BASE/config.orig" "$ZF_ZAPRET_BASE/config" \
+            || die "не удалось восстановить config.orig"
+        printf '  config.orig восстановлен как config\n'
+    fi
+
+    # 6. Удалить рабочую директорию. Все guards проверены до первой мутации.
+    rm -rf "$ZF_ZAPRET_BASE" || die "не удалось удалить $ZF_ZAPRET_BASE"
+    [[ ! -e "$ZF_ZAPRET_BASE" && ! -L "$ZF_ZAPRET_BASE" ]] \
+        || die "рабочая директория сохранилась после удаления: $ZF_ZAPRET_BASE"
     printf '  удалена директория %s\n' "$ZF_ZAPRET_BASE"
     printf '\nzapret-sonar полностью удалён.\n'
 }
@@ -1720,12 +1990,18 @@ _zf_remove_command_links() {
     for name in zapret-sonar sonar; do
         link="$ZF_BIN_DEST/$name"
         expected="$ZF_ZAPRET_BASE/zapret-sonar/zapret-sonar"
-        if [[ -L "$link" && "$(readlink -f "$link")" == "$expected" ]]; then rm -f "$link"; removed=$((removed + 1)); fi
+        if [[ -L "$link" && "$(readlink -f "$link")" == "$expected" ]]; then
+            rm -f "$link" || return 1
+            removed=$((removed + 1))
+        fi
     done
     for name in zapret-sonar-tui sonar-tui; do
         link="$ZF_BIN_DEST/$name"
         expected="$ZF_ZAPRET_BASE/zapret-sonar/zapret-sonar-tui"
-        if [[ -L "$link" && "$(readlink -f "$link")" == "$expected" ]]; then rm -f "$link"; removed=$((removed + 1)); fi
+        if [[ -L "$link" && "$(readlink -f "$link")" == "$expected" ]]; then
+            rm -f "$link" || return 1
+            removed=$((removed + 1))
+        fi
     done
     printf '%d\n' "$removed"
 }

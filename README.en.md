@@ -57,14 +57,15 @@ Also check:
 
 - GNU/Linux with `systemd`;
 - bash 4+, curl, tar, sha256sum, flock, iproute2, and standard GNU coreutils/findutils/grep/sed;
-- nftables (recommended), or iptables together with ipset;
+- nftables (recommended), or iptables together with `ipset` and `ip6tables`;
+- `restorecon` from policycoreutils on systems with SELinux enabled;
 - `unzip` only for the Flowseal branch fallback;
 - fzf for the optional TUI;
 - git for the installation method shown above.
 
 Bash completion: `source contrib/bash-completion.sh` or install the file system-wide as `/etc/bash_completion.d/zapret-sonar`.
 
-Tested on CachyOS (Arch, x86_64) and Ubuntu Server 26.04 LTS (x86_64). Other distributions with a compatible GNU userspace may work but are not in the tested matrix yet.
+Installation, reinstallation, service management, and uninstall are tested on Ubuntu Server 26.04 LTS, Arch Linux, and Fedora 44 (x86_64). The matrix covers nftables, iptables-legacy with ipset, and Fedora with SELinux enforcing.
 
 ## Commands
 
@@ -197,7 +198,7 @@ lib/zconfig.sh               config generation and ipset modes
 lib/health.sh                HTTP/content checks, baseline, and scoring
 lib/flowseal.sh              staging, activation, rollback, and pruning
 tests/                       smoke, safety, and pinned Flowseal tests
-tests/vm/                    full-VM privileged lifecycle matrix contract
+tests/vm/                    lifecycle tests in isolated VMs
 schemas/                     versioned JSON Schemas for machine-readable output
 scripts/build-release.sh     verified release asset builder
 .github/workflows/ci.yml     ShellCheck, syntax, and regression tests

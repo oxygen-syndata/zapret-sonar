@@ -109,6 +109,20 @@ rollback_install
 [[ "$(cat "$INSTALL_UNIT")" == old-unit ]]
 printf 'PASS: installer rollback restores base, command links and unit\n'
 
+restore_calls=()
+getenforce() { printf 'Enforcing\n'; }
+restorecon() { restore_calls+=("$*"); }
+ZAPRET_BASE="$TEST_DIR/selinux-zapret"
+INSTALL_UNIT="$TEST_DIR/selinux-zapret.service"
+restore_security_contexts
+[[ "${restore_calls[0]}" == "-R -x $ZAPRET_BASE" ]]
+[[ "${restore_calls[1]}" == "$INSTALL_UNIT" ]]
+restore_calls=()
+getenforce() { printf 'Disabled\n'; }
+restore_security_contexts
+(( ${#restore_calls[@]} == 0 ))
+printf 'PASS: installer restores labels only when SELinux is active\n'
+
 layout_root="$TEST_DIR/layout-case"
 mkdir -p "$layout_root/zapret" "$layout_root/bin"
 ZAPRET_BASE="$layout_root/zapret"
@@ -117,8 +131,8 @@ SERVICE_NAME=zapret-layout
 install_flow
 [[ -x "$ZAPRET_BASE/zapret-sonar/zapret-sonar" ]]
 [[ -x "$ZAPRET_BASE/zapret-sonar/zapret-sonar-tui" ]]
-[[ "$(readlink "$ZAPRET_BASE/zapret-sonar/current")" == releases/1.3.3 ]]
-[[ -f "$ZAPRET_BASE/zapret-sonar/releases/1.3.3/RELEASE" ]]
+[[ "$(readlink "$ZAPRET_BASE/zapret-sonar/current")" == releases/1.3.4 ]]
+[[ -f "$ZAPRET_BASE/zapret-sonar/releases/1.3.4/RELEASE" ]]
 grep -Fq 'ZF_BIN_DEST="${ZF_BIN_DEST:-'"$BIN_DEST"'}"' "$ZAPRET_BASE/zapret-sonar/lib/paths.sh"
 [[ "$(readlink -f "$BIN_DEST/sonar")" == "$ZAPRET_BASE/zapret-sonar/zapret-sonar" ]]
 grep -Fq -- '--install-root "$root"' "$ZAPRET_BASE/zapret-sonar/zapret-sonar"

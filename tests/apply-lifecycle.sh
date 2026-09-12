@@ -57,6 +57,45 @@ fi
 (( restart_count == 0 ))
 printf 'PASS: failed render does not restart an unchanged service\n'
 
+printf 'old-config\n' > "$ZF_ZAPRET_CONFIG"
+printf 'FWTYPE=nftables\nQNUM=200\nTABLE=zapret\n' > "$ZF_ZAPRET_BASE/.zapret-sonar-firewall"
+service_state=active
+restart_count=0
+cmd_render() { printf 'new-config\n' > "$ZF_ZAPRET_CONFIG"; }
+_zf_record_firewall_ownership() { return 1; }
+if cmd_apply general.bat off none >/dev/null 2>&1; then
+    printf 'FAIL: marker write failure reported success\n' >&2
+    exit 1
+fi
+[[ "$(cat "$ZF_ZAPRET_CONFIG")" == old-config ]]
+[[ "$(cat "$ZF_ZAPRET_BASE/.zapret-sonar-firewall")" == $'FWTYPE=nftables\nQNUM=200\nTABLE=zapret' ]]
+[[ "$service_state" == active ]]
+printf 'PASS: failed ownership marker restores config and active service\n'
+
+_zf_record_firewall_ownership() { :; }
+zf_state() {
+    case "$1" in
+        strategy) printf 'general.bat\n' ;;
+        gamefilter) printf 'off\n' ;;
+        *) return 1 ;;
+    esac
+}
+zf_ipset_mode() { printf 'none\n'; }
+zf_list_strategies() { printf 'general.bat\n'; }
+zf_translate() { :; }
+zf_verify() { :; }
+zf_write_config() { printf '# zapret-sonar-strategy: general.bat\nFWTYPE=nftables\n' > "$ZF_ZAPRET_CONFIG"; }
+zf_baseline() { return 1; }
+service_state=active
+printf 'old-config\n' > "$ZF_ZAPRET_CONFIG"
+if (cmd_try) >/dev/null 2>&1; then
+    printf 'FAIL: try marker failure reported success\n' >&2
+    exit 1
+fi
+[[ "$(cat "$ZF_ZAPRET_CONFIG")" == old-config ]]
+[[ "$service_state" == active ]]
+printf 'PASS: failed try restores config and active service\n'
+
 run_failed_try() {
     local initial="$1" state_file log
     state_file="$TEST_DIR/state-$initial"
