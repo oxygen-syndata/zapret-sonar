@@ -35,11 +35,11 @@ jobs:
         run: >-
           shellcheck --severity=warning
           zapret-sonar zapret-sonar-tui install.sh
-          lib/*.sh contrib/*.sh tests/*.sh scripts/*.sh
+          lib/*.sh contrib/*.sh tests/*.sh tests/vm/*.sh scripts/*.sh
 
       - name: Check Bash syntax
         run: |
-          for file in zapret-sonar zapret-sonar-tui install.sh lib/*.sh contrib/*.sh tests/*.sh scripts/*.sh; do
+          for file in zapret-sonar zapret-sonar-tui install.sh lib/*.sh contrib/*.sh tests/*.sh tests/vm/*.sh scripts/*.sh; do
             bash -n "$file"
           done
 

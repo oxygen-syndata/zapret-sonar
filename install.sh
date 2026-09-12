@@ -204,6 +204,11 @@ preflight() {
     done
     (( ${#missing[@]} == 0 )) || die "не хватает утилит: ${missing[*]}"
 
+    if command -v getenforce >/dev/null 2>&1 && [[ "$(getenforce 2>/dev/null || true)" != Disabled ]]; then
+        command -v restorecon >/dev/null 2>&1 \
+            || die "SELinux активен, но не найдена утилита restorecon (пакет policycoreutils)"
+    fi
+
     # Managed configs are rebuilt with the locally available backend. A plain
     # zapret config is preserved during explicit migration, so its FWTYPE wins.
     local fwtype; fwtype=$(install_effective_fwtype)
@@ -466,6 +471,32 @@ install_unit() {
     info "юнит: /etc/systemd/system/$SERVICE_NAME.service (автозапуск не включён)"
 }
 
+restore_security_contexts() {
+    command -v getenforce >/dev/null 2>&1 || return 0
+    [[ "$(getenforce 2>/dev/null || true)" != Disabled ]] || return 0
+    command -v restorecon >/dev/null 2>&1 \
+        || die "SELinux активен, но не найдена утилита restorecon (пакет policycoreutils)"
+    restorecon -R -x "$ZAPRET_BASE" \
+        && restorecon "$INSTALL_UNIT" \
+        || die "не удалось восстановить SELinux contexts установленных файлов"
+}
+
+record_firewall_ownership() {
+    [[ -f "$ZAPRET_BASE/config" ]] || return 0
+    grep -q '^# zapret-sonar-strategy: ' "$ZAPRET_BASE/config" || return 0
+    local fwtype qnum table tmp owner="$ZAPRET_BASE/.zapret-sonar-firewall"
+    fwtype=$(install_config_literal FWTYPE) || die "не удалось определить FWTYPE для firewall ownership"
+    qnum=$(install_config_literal QNUM 2>/dev/null || printf '200\n')
+    table=$(install_config_literal ZAPRET_NFT_TABLE 2>/dev/null || printf 'zapret\n')
+    [[ "$fwtype" == nftables || "$fwtype" == iptables ]] || die "некорректный FWTYPE для firewall ownership"
+    [[ "$qnum" =~ ^[0-9]+$ && qnum -le 65535 ]] || die "некорректный QNUM для firewall ownership"
+    [[ "$table" =~ ^[A-Za-z0-9_.-]+$ ]] || die "некорректная nftables table для firewall ownership"
+    tmp=$(mktemp "$ZAPRET_BASE/.firewall-owner.XXXXXX") || die "не удалось создать firewall ownership"
+    printf 'FWTYPE=%s\nQNUM=%s\nTABLE=%s\n' "$fwtype" "$qnum" "$table" > "$tmp"
+    chmod 600 "$tmp" && chown root:root "$tmp" && mv -f "$tmp" "$owner" \
+        || { rm -f "$tmp"; die "не удалось записать firewall ownership"; }
+}
+
 rebuild_existing_config() {
     local cli="$ZAPRET_BASE/zapret-sonar/zapret-sonar"
     local strategy gamefilter ipset
@@ -563,6 +594,8 @@ main() {
     install_unit
     rebuild_existing_config
     finalize_flowseal_install
+    record_firewall_ownership
+    restore_security_contexts
     check_conflicts
     if (( INSTALL_SERVICE_ACTIVE )); then
         systemctl restart "$SERVICE_NAME" || die "сервис не запустился после переустановки"

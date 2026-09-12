@@ -34,7 +34,7 @@ jobs:
 
       - name: Check bash syntax
         run: |
-          for f in zapret-sonar zapret-sonar-tui install.sh lib/*.sh contrib/*.sh tests/*.sh scripts/*.sh; do
+          for f in zapret-sonar zapret-sonar-tui install.sh lib/*.sh contrib/*.sh tests/*.sh tests/vm/*.sh scripts/*.sh; do
             echo ":: Checking $f"
             bash -n "$f" || exit 1
           done

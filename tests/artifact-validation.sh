@@ -113,3 +113,116 @@ source "$PROJECT_DIR/zapret-sonar"
 [[ ! -e "$ZF_BIN_DEST/sonar" && ! -e "$ZF_BIN_DEST/sonar-tui" ]]
 [[ "$(readlink "$ZF_BIN_DEST/zapret-sonar")" == /foreign/command ]]
 printf 'PASS: uninstall removes only owned links from custom BIN_DEST\n'
+
+printf '# zapret-sonar-strategy: general.bat\nFWTYPE=iptables\n' > "$ZF_ZAPRET_BASE/config"
+nft() { return 1; }
+iptables-save() { return 0; }
+ip6tables-save() { return 0; }
+_zf_cleanup_firewall_state >/dev/null
+
+iptables-save() {
+    printf '%s\n' \
+        '-A POSTROUTING -p tcp -j NFQUEUE --queue-num 200' \
+        '-A POSTROUTING -p udp -j NFQUEUE --queue-num 200' \
+        '-A INPUT -p tcp -j NFQUEUE --queue-num 200' \
+        '-A INPUT -p udp -j NFQUEUE --queue-num 200' \
+        '-A FORWARD -p tcp -j NFQUEUE --queue-num 200' \
+        '-A FORWARD -p udp -j NFQUEUE --queue-num 200'
+}
+_zf_iptables_state_is_owned
+destroyed=""
+iptables-save() { return 0; }
+ipset() {
+    case "$1" in
+        list) [[ " zapret zapret6 ipban ipban6 nozapret nozapret6 " == *" $2 "* ]] ;;
+        destroy) destroyed+="$2 " ;;
+        *) return 1 ;;
+    esac
+}
+_zf_cleanup_firewall_state 0 1 >/dev/null
+[[ "$destroyed" == 'zapret zapret6 ipban ipban6 nozapret nozapret6 ' ]]
+
+printf 'FWTYPE=nftables\nQNUM=200\nZAPRET_NFT_TABLE=custom-zapret\n' > "$ZF_ZAPRET_BASE/config"
+chown() { :; }
+_zf_record_firewall_ownership
+[[ "$(cat "$ZF_ZAPRET_BASE/.zapret-sonar-firewall")" == $'FWTYPE=nftables\nQNUM=200\nTABLE=custom-zapret' ]]
+
+iptables-save() { printf '%s\n' '-A POSTROUTING -m set ! --match-set nozapret dst -j NFQUEUE --queue-num 999'; }
+if _zf_cleanup_firewall_state >/dev/null 2>&1; then
+    printf 'FAIL: residual zapret iptables rule was accepted during cleanup\n' >&2
+    exit 1
+fi
+iptables-save() { return 0; }
+
+printf '# zapret-sonar-strategy: general.bat\nFWTYPE=nftables\n' > "$ZF_ZAPRET_BASE/config"
+nft() {
+    case "$*" in
+        'list tables') printf 'table inet custom-zapret\n' ;;
+        'list table inet custom-zapret') cat <<'EOF'
+table inet custom-zapret {
+    set zapret {
+    }
+    set nozapret {
+    }
+    chain postnat {
+        tcp dport 443 queue to 200
+        udp dport 443 queue to 200
+    }
+    chain prenat {
+        tcp sport 443 queue to 200
+        udp sport 443 queue to 200
+    }
+    chain predefrag_nfqws {
+    }
+}
+EOF
+            ;;
+        'delete table inet custom-zapret') nft_deleted=1 ;;
+        *) return 1 ;;
+    esac
+}
+nft_deleted=0
+printf 'ZAPRET_NFT_TABLE=custom-zapret\n' >> "$ZF_ZAPRET_BASE/config"
+_zf_nft_table_is_owned custom-zapret
+if _zf_cleanup_firewall_state 0 >/dev/null 2>&1; then
+    printf 'FAIL: residual nftables table was deleted without ownership\n' >&2
+    exit 1
+fi
+[[ "$nft_deleted" == 0 ]]
+_zf_cleanup_firewall_state 1 >/dev/null
+[[ "$nft_deleted" == 1 ]]
+
+nft() {
+    case "$*" in
+        'list tables') printf 'table inet custom-zapret\n' ;;
+        'list table inet custom-zapret') printf 'table inet custom-zapret {\n    chain foreign {\n    }\n}\n' ;;
+        *) return 1 ;;
+    esac
+}
+if _zf_nft_table_is_owned custom-zapret >/dev/null 2>&1; then
+    printf 'FAIL: foreign nftables table was accepted as owned\n' >&2
+    exit 1
+fi
+
+nft() { return 1; }
+if _zf_cleanup_firewall_state >/dev/null 2>&1; then
+    printf 'FAIL: nftables read error was accepted during cleanup\n' >&2
+    exit 1
+fi
+
+owned_unit="$TEST_DIR/owned.service"
+foreign_unit="$TEST_DIR/foreign.service"
+printf 'ExecStart=%s/init.d/sysv/zapret start\nExecStop=%s/init.d/sysv/zapret stop\n' \
+    "$ZF_ZAPRET_BASE" "$ZF_ZAPRET_BASE" > "$owned_unit"
+printf '# %s/init.d/sysv/zapret\nExecStart=/usr/bin/other-service\n' "$ZF_ZAPRET_BASE" > "$foreign_unit"
+_zf_unit_is_owned "$owned_unit"
+! _zf_unit_is_owned "$foreign_unit"
+ZF_SERVICE=zapret-test
+systemctl() {
+    [[ "$1" == show && "$2" == "$ZF_SERVICE" && "$3" == -p ]] || return 1
+    printf 'LoadState=loaded\nFragmentPath=/usr/lib/systemd/system/zapret-test.service\nDropInPaths=\n'
+    printf 'ExecStart={ path=%s/init.d/sysv/zapret ; argv[]=%s/init.d/sysv/zapret start ; }\n' "$ZF_ZAPRET_BASE" "$ZF_ZAPRET_BASE"
+    printf 'ExecStop={ path=%s/init.d/sysv/zapret ; argv[]=%s/init.d/sysv/zapret stop ; }\n' "$ZF_ZAPRET_BASE" "$ZF_ZAPRET_BASE"
+}
+[[ "$(_zf_service_fragment_path)" == *'FragmentPath=/usr/lib/systemd/system/zapret-test.service'* ]]
+printf 'PASS: uninstall verifies firewall cleanup without deleting objects by name\n'

@@ -1,0 +1,5 @@
+# profile	image_id	image_file	image_url	image_sha256	ssh_user	ssh_port
+ubuntu-nft	ubuntu-26.04-amd64	ubuntu-26.04-server-cloudimg-amd64.img	https://cloud-images.ubuntu.com/releases/26.04/release-20260823/ubuntu-26.04-server-cloudimg-amd64.img	8196be9d7958059cb56c6c75c80fdf6cee8a8885bc149ea791d7db1c7ef93035	zapret-test	22241
+arch-nft	arch-20260901-amd64	Arch-Linux-x86_64-cloudimg.qcow2	https://geo.mirror.pkgbuild.com/images/v20260901.583572/Arch-Linux-x86_64-cloudimg-20260901.583572.qcow2	e3e688f97a71b265ce202905a504253f60f3680cf57d011a45411c43bedfa930	zapret-test	22242
+ubuntu-iptables-legacy	ubuntu-26.04-amd64	ubuntu-26.04-server-cloudimg-amd64.img	https://cloud-images.ubuntu.com/releases/26.04/release-20260823/ubuntu-26.04-server-cloudimg-amd64.img	8196be9d7958059cb56c6c75c80fdf6cee8a8885bc149ea791d7db1c7ef93035	zapret-test	22243
+fedora-nft	fedora-44-1.7-amd64	Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2	https://download.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2	28680fe5b371a5a82ebf43a31926e086a168e59949d03969c5093e7071f90b7f	zapret-test	22244
